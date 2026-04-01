@@ -6,7 +6,7 @@ the [machine](https://github.com/stirlingbridge/machine) utility.
 
 ## Scripts
 
-### compose.sh
+### combine.sh
 Supports the execution of several other scripts together (useful because machine provisioning only allows one script to be executed).
 ### docker.sh
 Installs Docker and performs associated system configuration.
@@ -24,8 +24,8 @@ machines:
     k8s-stack-host:
         new-user-name: bpi
         script-dir: /opt/bpi
-        script-url: https://raw.githubusercontent.com/bozemanpass/machine-provisioning/refs/heads/main/scripts/compose.sh
-        script-path: /opt/bpi/compose.sh
+        script-url: https://raw.githubusercontent.com/bozemanpass/machine-provisioning/refs/heads/main/scripts/combine.sh
+        script-path: /opt/bpi/combine.sh
         script-args: >-
           --script-url packages.sh --script-args "build-essential"
           --script-url podman.sh
