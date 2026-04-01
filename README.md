@@ -24,7 +24,7 @@ machines:
     k8s-stack-host:
         new-user-name: bpi
         script-dir: /opt/bpi
-        script-url: https://raw.githubusercontent.com/bozemanpass/machine-provisioning/refs/heads/main/scripts/combine.sh
+        script-url: https://raw.githubusercontent.com/stirlingbridge/machine-provisioning/refs/heads/main/scripts/combine.sh
         script-path: /opt/bpi/combine.sh
         script-args: >-
           --script-url packages.sh --script-args "build-essential"
