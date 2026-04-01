@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-if [[ -n "$BPI_SCRIPT_DEBUG" ]]; then
+if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi
 
@@ -70,10 +70,10 @@ for script in "${SCRIPTS[@]}"; do
     if [[ $script_url != http* ]]; then
       script_url="${DEFAULT_SCRIPT_URL_PREFIX}/${script}"
     fi
-    echo "Downloading $script_url to /tmp/compose.script.$step ..."
-    wget -q -O /tmp/compose.step.$step "$script_url"
-    chmod 700 /tmp/compose.step.$step
-    cmd=/tmp/compose.step.$step
+    echo "Downloading $script_url to /tmp/combine.script.$step ..."
+    wget -q -O /tmp/combine.step.$step "$script_url"
+    chmod 700 /tmp/combine.step.$step
+    cmd=/tmp/combine.step.$step
   fi
 
   echo "Running: $cmd ${ARGS["$step"]}"
@@ -89,7 +89,7 @@ for script in "${SCRIPTS[@]}"; do
   fi
 done
 
-rm -f /tmp/compose.step.*
+rm -f /tmp/combine.step.*
 
 if [[ $rc -eq 0 ]]; then
   echo "All scripts completed successfully."
