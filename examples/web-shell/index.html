@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Shell Example</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+        h1 { font-size: 1.3em; margin-bottom: 16px; color: #a0c4ff; }
+        h2 { font-size: 1.1em; margin-bottom: 8px; color: #a0c4ff; }
+
+        .panel {
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .row { display: flex; gap: 16px; margin-bottom: 16px; }
+        .row > * { flex: 1; }
+
+        label { display: block; font-size: 0.85em; color: #999; margin-bottom: 4px; }
+        input, textarea {
+            width: 100%;
+            background: #0a0a1a;
+            border: 1px solid #0f3460;
+            color: #e0e0e0;
+            padding: 8px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+        textarea { resize: vertical; min-height: 60px; }
+
+        button {
+            background: #0f3460;
+            color: #e0e0e0;
+            border: 1px solid #1a5276;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            margin-right: 8px;
+            margin-top: 8px;
+        }
+        button:hover { background: #1a5276; }
+        button:disabled { opacity: 0.4; cursor: default; }
+
+        #terminal-container {
+            height: 400px;
+            background: #000;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        #exec-output {
+            background: #0a0a1a;
+            border: 1px solid #0f3460;
+            color: #b0f0b0;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 0.85em;
+            white-space: pre-wrap;
+            min-height: 80px;
+            max-height: 300px;
+            overflow-y: auto;
+            border-radius: 4px;
+        }
+
+        .status { font-size: 0.85em; margin-top: 8px; }
+        .status.ok { color: #4caf50; }
+        .status.err { color: #f44336; }
+        .status.info { color: #ffa726; }
+    </style>
+</head>
+<body>
+
+<h1>Web Shell Example</h1>
+
+<!-- Key Management -->
+<div class="panel">
+    <h2>1. Key Pair</h2>
+    <p style="font-size:0.85em; color:#999; margin-bottom:12px;">
+        Generate an Ed25519 key pair in the browser. The public key (PEM) is provisioned onto the
+        machine; the private key stays here and signs JWTs.
+    </p>
+    <button id="btn-generate">Generate Key Pair</button>
+    <button id="btn-export-pub">Copy Public Key PEM</button>
+    <button id="btn-save-keys">Save Keys to localStorage</button>
+    <button id="btn-load-keys">Load Saved Keys</button>
+    <div id="key-status" class="status"></div>
+    <div style="margin-top: 12px;">
+        <label>Public Key (PEM) &mdash; provision this on the machine</label>
+        <textarea id="public-key-pem" readonly rows="4"></textarea>
+    </div>
+</div>
+
+<!-- Connection -->
+<div class="panel">
+    <h2>2. Connect</h2>
+    <div class="row">
+        <div>
+            <label>Machine Host (e.g. shell.example.com)</label>
+            <input id="host" type="text" placeholder="shell.example.com">
+        </div>
+        <div>
+            <label>JWT Lifetime (seconds)</label>
+            <input id="jwt-lifetime" type="number" value="3600">
+        </div>
+    </div>
+    <button id="btn-connect">Connect Terminal</button>
+    <button id="btn-disconnect" disabled>Disconnect</button>
+    <div id="conn-status" class="status"></div>
+</div>
+
+<!-- Interactive Terminal -->
+<div class="panel">
+    <h2>3. Interactive Terminal</h2>
+    <div id="terminal-container"></div>
+</div>
+
+<!-- Programmatic Execution -->
+<div class="panel">
+    <h2>4. Programmatic Command Execution</h2>
+    <p style="font-size:0.85em; color:#999; margin-bottom:12px;">
+        Runs a command on a separate WebSocket connection and captures output.
+        Uses sentinel markers to extract clean output and exit code.
+    </p>
+    <div class="row">
+        <div>
+            <label>Command</label>
+            <input id="exec-cmd" type="text" placeholder="uname -a" value="uname -a">
+        </div>
+    </div>
+    <button id="btn-exec">Run Command</button>
+    <div id="exec-status" class="status"></div>
+    <div style="margin-top: 8px;">
+        <label>Output</label>
+        <div id="exec-output">(no output yet)</div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="web-shell.js"></script>
+</body>
+</html>
