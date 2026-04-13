@@ -16,6 +16,8 @@ Installs a single-node k8s cluster using k3s.
 Installs podman (only install one of: Docker and podman).
 ### stack.sh
 Installs the [stack](https://github.com/bozemanpass/stack) application deployment utility.
+### web-shell.sh
+Installs browser-based remote shell access using ttyd, Caddy (with Let's Encrypt TLS), and JWT authentication with asymmetric keys. Supports interactive terminal sessions and programmatic command execution from browser JavaScript. See [examples/web-shell/](examples/web-shell/) for a complete example app and detailed documentation.
 
 ## Example
 Scripts can be used individually, or together to provision more complex machine configurations specifying arguments as shown in the following `~/.machine/config.yaml` example. It provisions a machine that has the `build-essential` package installed, then podman, the stack utility and finally a single node k8s cluster, with appropriate configuration for hosting applications with TLS:
