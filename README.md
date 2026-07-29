@@ -36,10 +36,18 @@ machines:
         script-dir: /opt/bpi
         script-url: https://raw.githubusercontent.com/stirlingbridge/machine-provisioning/refs/heads/main/scripts/combine.sh
         script-path: /opt/bpi/combine.sh
+        script-args:
+          - packages.sh build-essential
+          - podman.sh
+          - stack.sh
+          - k3s-node.sh -y --letsencrypt-email user@example.com --do-dns-access-token ZZZZ --image-registry registry.digitalocean.com --image-registry-username user@example.com --image-registry-password YYYY
+```
+Each entry in the `script-args` list names one script followed by its arguments. An argument that itself contains spaces can be quoted inside the entry, e.g. `- 'motd.sh --message "hello world"'`.
+
+The older flag-based syntax is still supported, with `script-args` given as a single string:
+```yaml
         script-args: >-
           --script-url packages.sh --script-args "build-essential"
           --script-url podman.sh
-          --script-url stack.sh
-          --script-url k3s-node.sh
-          --script-args "-y --letsencrypt-email user@example.com --do-dns-access-token ZZZZ --image-registry registry.digitalocean.com --image-registry-username user@example.com --image-registry-password YYYY"
+          --script-url k3s-node.sh --script-args "-y --letsencrypt-email user@example.com"
 ```
