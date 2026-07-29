@@ -5,7 +5,7 @@ fi
 
 DEFAULT_SCRIPT_URL_PREFIX="$(dirname ${MACHINE_SCRIPT_URL})"
 if [[ -z "$DEFAULT_SCRIPT_URL_PREFIX" ]]; then
-  DEFAULT_SCRIPT_URL_PREFIX="https://raw.githubusercontent.com/bozemanpass/machine-provisioning/refs/heads/main/scripts"
+  DEFAULT_SCRIPT_URL_PREFIX="https://raw.githubusercontent.com/stirlingbridge/machine-provisioning/refs/heads/main/scripts"
 fi
 
 export DEBIAN_FRONTEND=noninteractive
