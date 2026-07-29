@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+#
+# health.sh -- serve a simple provisioning-status endpoint over HTTP.
+#
+# Starts a background python3 CGI server rooted at /var/opt/machine/health which
+# serves /cgi-bin/cloud-init-status. That endpoint returns JSON of the form
+# { "status": "INITIALIZING" | "UP" | "ERROR" }, derived from the cloud-init
+# output log, so a remote caller can tell when provisioning has finished.
+#
+# Usage:
+#   health.sh [--port <port>]
+#
+#   --port   Port to listen on (default 4242).
+#
 if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi

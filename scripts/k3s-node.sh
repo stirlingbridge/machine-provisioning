@@ -1,4 +1,33 @@
 #!/usr/bin/env bash
+#
+# k3s-node.sh -- install a single-node Kubernetes cluster using k3s, ready for
+# hosting applications with TLS.
+#
+# Installs k3s (with the bundled traefik ingress disabled), the nginx ingress
+# controller, and cert-manager, then creates Let's Encrypt ClusterIssuers.
+# Any distro-packaged docker components are removed first. Debian and Ubuntu
+# only.
+#
+# Usage:
+#   k3s-node.sh [-y] [--letsencrypt-email <email>]
+#               [--do-dns-access-token <token>]
+#               [--image-registry <host>] [--image-registry-username <user>]
+#               [--image-registry-password <password>]
+#
+#   -y                          Don't prompt for confirmation before making
+#                               changes (required for unattended provisioning).
+#   --letsencrypt-email         Contact address for Let's Encrypt. Without it
+#                               the ClusterIssuers are not created, only written
+#                               to $HOME as template files to complete by hand.
+#   --do-dns-access-token       DigitalOcean API token, enabling an additional
+#                               DNS-01 ClusterIssuer (needed for wildcard certs).
+#   --image-registry            Container image registry to authenticate against,
+#   --image-registry-username   with these credentials, so the cluster can pull
+#   --image-registry-password   private images.
+#
+# Environment:
+#   BPI_INSTALL_SKIP_PACKAGES   If set, skip the package install phase.
+#
 if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi

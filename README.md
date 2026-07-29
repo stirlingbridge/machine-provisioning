@@ -10,8 +10,16 @@ the [machine](https://github.com/stirlingbridge/machine) utility.
 Supports the execution of several other scripts together (useful because machine provisioning only allows one script to be executed).
 ### docker.sh
 Installs Docker and performs associated system configuration.
+### error.sh
+Always fails. A test script for checking that provisioning failures are detected and reported correctly.
+### fqdn.sh
+Writes the machine's fully qualified domain name (taken from the `MACHINE_FQDN` environment variable) to `/etc/machine/fqdn`, where other scripts and applications can read it.
+### health.sh
+Serves a provisioning status endpoint at `/cgi-bin/cloud-init-status` (port 4242 by default, set with `--port`), returning JSON of the form `{ "status": "INITIALIZING" | "UP" | "ERROR" }` so a remote caller can tell when provisioning has finished.
 ### k3s-node.sh
 Installs a single-node k8s cluster using k3s.
+### packages.sh
+Installs the distro packages named in its arguments, which are passed through to `apt install`.
 ### podman.sh
 Installs podman (only install one of: Docker and podman).
 ### stack.sh

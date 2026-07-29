@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+#
+# stack.sh -- install the stack application deployment utility
+# (https://github.com/bozemanpass/stack) as /usr/local/bin/stack.
+#
+# By default a pre-built release binary is downloaded. On distro versions with
+# no pre-built binary (anything other than Ubuntu 22.04 and 24.04), or when -b
+# is given, stack is built from source instead.
+#
+# Usage:
+#   stack.sh [-f] [-b] [-v <version>]
+#
+#   -f            Reinstall even if /usr/local/bin/stack already exists.
+#   -b            Build from source rather than downloading a release binary.
+#   -v <version>  Release tag / git ref to install ("latest" is the default).
+#
 if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi

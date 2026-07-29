@@ -1,4 +1,22 @@
 #!/usr/bin/env bash
+#
+# combine.sh -- run several provisioning scripts in sequence.
+#
+# Useful because most machine provisioning mechanisms only allow a single
+# script to be executed after first boot.
+#
+# Usage:
+#   combine.sh --script-url <script> [--script-args "<args>"] [--script-url ... ]
+#
+#   --script-url   Script to run. Either an absolute local path, a full URL, or
+#                  a bare file name resolved relative to the directory part of
+#                  $MACHINE_SCRIPT_URL (falling back to this repo's scripts
+#                  directory on GitHub). Repeat for each script to run.
+#   --script-args  Arguments for the immediately preceding --script-url.
+#
+# Scripts run in the order given, and execution stops at the first failure.
+# Exits with the exit status of the last script run.
+#
 if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi

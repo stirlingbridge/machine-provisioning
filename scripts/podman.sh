@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+#
+# podman.sh -- install podman, plus podman-docker (the docker CLI shim) when no
+# real docker installation is present, and enable docker.io as an unqualified
+# search registry.
+#
+# Usage:
+#   podman.sh [-f]
+#
+#   -f   Reinstall even if podman is already present (otherwise this script
+#        does nothing when podman is already installed).
+#
+# Install only one of docker.sh and podman.sh on a given machine.
+#
 if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi
