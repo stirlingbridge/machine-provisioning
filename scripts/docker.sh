@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+#
+# docker.sh -- install Docker CE from the official Docker apt repository and
+# add the invoking user to the docker group.
+#
+# Usage:
+#   docker.sh [-f]
+#
+#   -f   Reinstall even if docker is already present (otherwise this script
+#        does nothing when docker is already installed).
+#
+# Install only one of docker.sh and podman.sh on a given machine.
+#
 if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi
