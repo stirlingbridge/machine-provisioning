@@ -9,8 +9,8 @@
 #
 # With --gateway-api, the Gateway API is provisioned instead of the Ingress API:
 # k3s's bundled traefik is kept and used as the Gateway API implementation, and
-# a Gateway is created for workloads to attach their HTTPRoutes to. See the
-# notes above the --gateway-api option below.
+# a Gateway named "stack-gateway" is created for workloads to attach their
+# HTTPRoutes to. See the notes above the --gateway-api option below.
 #
 # The latest release of each component is installed rather than a pinned
 # version.
@@ -39,7 +39,7 @@
 #                               installed; k3s's bundled traefik is kept instead
 #                               and its Gateway API provider enabled, which also
 #                               brings in the Gateway API CRDs. A Gateway named
-#                               "traefik-gateway" is created in the kube-system
+#                               "stack-gateway" is created in the kube-system
 #                               namespace, accepting routes from all namespaces,
 #                               and cert-manager's Gateway API support is turned
 #                               on.
@@ -49,6 +49,14 @@
 #                               Ingress. Nothing in a workload names traefik, so
 #                               the choice of implementation stays a property of
 #                               the machine and can be changed here later.
+#
+#                               The Gateway is created by this script as a plain
+#                               resource, not by the traefik helm chart: the
+#                               stack utility adds and removes per-application
+#                               HTTPS listeners on it at deploy time (obtaining
+#                               each certificate over HTTP-01), and a chart-owned
+#                               Gateway would be re-synced on chart upgrades,
+#                               silently dropping those listeners.
 #
 #                               Note that the traffic-routing resources are
 #                               stable (GA), but cert-manager's Gateway API
@@ -64,7 +72,10 @@
 #                               Gateway's listener rather than to each workload,
 #                               so one wildcard certificate covers every
 #                               application on the machine. Without this option
-#                               the Gateway serves HTTP only.
+#                               the Gateway starts with an HTTP listener only,
+#                               and HTTPS listeners with individual HTTP-01
+#                               certificates are added per application (by the
+#                               stack utility at deploy time, or by hand).
 #   --image-registry            Host name of a container image registry, and the
 #   --image-registry-username   credentials to authenticate to it with, so that
 #   --image-registry-password   the cluster can pull private images from it.
@@ -108,9 +119,11 @@ TLS_SAN_ARGS=""
 GATEWAY_API=false
 WILDCARD_DOMAIN=""
 
-# Where the traefik chart puts the Gateway it deploys for us, and the name of the
-# secret its HTTPS listener reads the wildcard certificate from.
-GATEWAY_NAME="traefik-gateway"
+# The Gateway that workloads attach their HTTPRoutes to, and the name of the
+# secret its wildcard HTTPS listener (if any) reads its certificate from. The
+# name and namespace are a contract with the stack utility, which attaches
+# routes to this Gateway and adds per-application HTTPS listeners to it.
+GATEWAY_NAME="stack-gateway"
 GATEWAY_NAMESPACE="kube-system"
 WILDCARD_SECRET_NAME="wildcard-tls"
 
@@ -269,10 +282,10 @@ if [[ "$GATEWAY_API" == "true" ]]; then
   # applied as traefik is first deployed rather than needing a restart. Enabling
   # the kubernetesGateway provider also installs the Gateway API CRDs.
   #
-  # The chart deploys the Gateway for us: listeners are declared here rather than
-  # as a separate manifest so that the ports stay consistent with the ones the
-  # chart declares for the traefik service (web 8000, websecure 8443, which the
-  # service exposes as 80 and 443).
+  # The chart's own Gateway is disabled: the Gateway is created directly by this
+  # script further below instead, because the stack utility adds and removes
+  # per-application HTTPS listeners on it at deploy time, and a chart-owned
+  # Gateway would be re-synced on chart upgrades, dropping those listeners.
   echo "Configuring traefik as the Gateway API implementation"
   sudo mkdir -p /var/lib/rancher/k3s/server/manifests
 
@@ -289,40 +302,8 @@ spec:
       kubernetesGateway:
         enabled: true
     gateway:
-      enabled: true
+      enabled: false
 EOF
-
-  if [[ -n "$WILDCARD_DOMAIN" ]]; then
-    # cert-manager watches for this annotation on a Gateway and issues a
-    # Certificate covering the listeners' hostnames into the secret named by
-    # certificateRefs. The DNS-01 issuer is required for the wildcard.
-    cat >> "$traefik_config_file" <<EOF
-      annotations:
-        cert-manager.io/cluster-issuer: letsencrypt-prod-dns
-EOF
-  fi
-
-  cat >> "$traefik_config_file" <<EOF
-      listeners:
-        web:
-          port: 8000
-          protocol: HTTP
-          namespacePolicy:
-            from: All
-EOF
-
-  if [[ -n "$WILDCARD_DOMAIN" ]]; then
-    cat >> "$traefik_config_file" <<EOF
-        websecure:
-          port: 8443
-          protocol: HTTPS
-          hostname: "*.${WILDCARD_DOMAIN}"
-          namespacePolicy:
-            from: All
-          certificateRefs:
-            - name: ${WILDCARD_SECRET_NAME}
-EOF
-  fi
 
   sudo mv "$traefik_config_file" /var/lib/rancher/k3s/server/manifests/k3s-traefik-config.yaml
   sudo chown root:root /var/lib/rancher/k3s/server/manifests/k3s-traefik-config.yaml
@@ -346,6 +327,57 @@ if ! retry sudo kubectl wait --for=create crd/gateways.gateway.networking.k8s.io
   die "the Gateway API CRDs did not appear; check that traefik deployed (kubectl -n kube-system get helmchart,pods)"
 fi
 echo "Gateway API CRDs are present"
+
+echo "**************************************************************************************"
+echo "Creating the ${GATEWAY_NAME} Gateway"
+# The listener ports must be traefik's entrypoint ports (web 8000, websecure
+# 8443, which its service exposes as 80 and 443) -- traefik only serves
+# listeners whose port matches an entrypoint.
+#
+# The cluster-issuer annotation is how cert-manager knows to issue certificates
+# for this Gateway's HTTPS listeners; cert-manager is installed further below,
+# and the annotation is inert until then. In wildcard mode the certificate can
+# only be issued over DNS-01, so the DNS issuer is named; otherwise the HTTP-01
+# issuer is named, covering the per-application listeners that the stack
+# utility adds later.
+gateway_manifest_file=$(mktemp)
+cat > "$gateway_manifest_file" <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ${GATEWAY_NAME}
+  namespace: ${GATEWAY_NAMESPACE}
+  annotations:
+    cert-manager.io/cluster-issuer: $([[ -n "$WILDCARD_DOMAIN" ]] && echo "letsencrypt-prod-dns" || echo "letsencrypt-prod")
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: web
+      port: 8000
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+EOF
+
+if [[ -n "$WILDCARD_DOMAIN" ]]; then
+  cat >> "$gateway_manifest_file" <<EOF
+    - name: websecure
+      port: 8443
+      protocol: HTTPS
+      hostname: "*.${WILDCARD_DOMAIN}"
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: ${WILDCARD_SECRET_NAME}
+EOF
+fi
+
+retry sudo kubectl apply -f "$gateway_manifest_file" || die "failed to create the ${GATEWAY_NAME} Gateway"
+rm -f "$gateway_manifest_file"
 
 else
 
@@ -623,8 +655,23 @@ if [[ "$GATEWAY_API" == "true" ]]; then
     echo "Individual workloads need no certificate configuration of their own: any"
     echo "*.${WILDCARD_DOMAIN} hostname is already covered."
   else
-    echo "No --wildcard-domain was given, so the Gateway serves HTTP only. Add a TLS"
-    echo "listener to it, or re-provision with --wildcard-domain, to serve HTTPS."
+    echo "No --wildcard-domain was given, so the Gateway starts with an HTTP listener"
+    echo "only. HTTPS is provisioned per application: the stack utility adds an HTTPS"
+    echo "listener for each application's hostname at deploy time, and cert-manager"
+    echo "obtains its certificate from Let's Encrypt over HTTP-01. To serve HTTPS for"
+    echo "a hand-deployed workload, add a listener for its hostname to the Gateway:"
+    echo
+    echo "    - name: my-app-https"
+    echo "      port: 8443"
+    echo "      protocol: HTTPS"
+    echo "      hostname: my-app.example.com"
+    echo "      allowedRoutes:"
+    echo "        namespaces:"
+    echo "          from: All"
+    echo "      tls:"
+    echo "        mode: Terminate"
+    echo "        certificateRefs:"
+    echo "          - name: my-app-tls"
   fi
   echo
 fi
