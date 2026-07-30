@@ -18,6 +18,10 @@ Writes the machine's fully qualified domain name (taken from the `MACHINE_FQDN` 
 Serves a provisioning status endpoint at `/cgi-bin/cloud-init-status` (port 4242 by default, set with `--port`), returning JSON of the form `{ "status": "INITIALIZING" | "UP" | "ERROR" }` so a remote caller can tell when provisioning has finished.
 ### k3s-node.sh
 Installs a single-node k8s cluster using k3s.
+
+By default the cluster serves application traffic through the Ingress API, using the nginx ingress controller with per-application Let's Encrypt certificates from cert-manager. Note that [ingress-nginx is retired upstream](https://www.kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/) and no longer receives fixes of any kind, including security fixes.
+
+Passing `--gateway-api` provisions the [Gateway API](https://gateway-api.sigs.k8s.io/) instead. k3s's bundled traefik is kept as the Gateway API implementation and a `Gateway` is created for workloads to attach `HTTPRoute`s to, so no workload names a particular proxy and the implementation remains a property of the machine. Adding `--wildcard-domain <domain>` (which also requires `--do-dns-access-token` and `--letsencrypt-email`) serves a single `*.<domain>` certificate from the Gateway's HTTPS listener, covering every application on the machine. The comment at the top of the script documents all of its options.
 ### packages.sh
 Installs the distro packages named in its arguments, which are passed through to `apt install`.
 ### podman.sh
