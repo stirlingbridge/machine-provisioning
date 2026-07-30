@@ -13,8 +13,11 @@ if [[ ! -d "/etc/machine" ]]; then
 fi
 
 if [[ -n "$MACHINE_FQDN" ]]; then
-  echo "$MACHINE_FQDN" > /tmp/fqdn.??
-  sudo mv /tmp/fqdn.?? /etc/machine/fqdn
+  fqdn_file=$(mktemp)
+  echo "$MACHINE_FQDN" > "$fqdn_file"
+  sudo mv "$fqdn_file" /etc/machine/fqdn
+  # mktemp creates the file 0600, but anything on the machine may need to read it
+  sudo chmod 644 /etc/machine/fqdn
 fi
 
 sudo chown -R root:root /etc/machine
