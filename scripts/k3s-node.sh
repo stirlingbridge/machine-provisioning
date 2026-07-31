@@ -3,14 +3,14 @@
 # k3s-node.sh -- install a single-node Kubernetes cluster using k3s, ready for
 # hosting applications with TLS.
 #
-# By default, installs k3s (with the bundled traefik ingress disabled), the
-# nginx ingress controller, and cert-manager, then creates Let's Encrypt
-# ClusterIssuers. Debian and Ubuntu only.
+# By default, installs k3s and cert-manager, provisions the Gateway API (k3s's
+# bundled traefik is kept and used as the Gateway API implementation, with a
+# Gateway named "stack-gateway" for workloads to attach their HTTPRoutes to),
+# and creates Let's Encrypt ClusterIssuers. Debian and Ubuntu only.
 #
-# With --gateway-api, the Gateway API is provisioned instead of the Ingress API:
-# k3s's bundled traefik is kept and used as the Gateway API implementation, and
-# a Gateway named "stack-gateway" is created for workloads to attach their
-# HTTPRoutes to. See the notes above the --gateway-api option below.
+# With --nginx-ingress, the legacy Ingress API is provisioned instead: traefik
+# is disabled and the nginx ingress controller is installed. See the notes above
+# the --nginx-ingress option below.
 #
 # The latest release of each component is installed rather than a pinned
 # version.
@@ -19,7 +19,7 @@
 #   k3s-node.sh [-y] [--letsencrypt-email <email>]
 #               [--do-dns-access-token <token>]
 #               [--tls-san <name>]
-#               [--gateway-api] [--wildcard-domain <domain>]
+#               [--wildcard-domain <domain>] [--nginx-ingress]
 #               [--image-registry <host>] [--image-registry-username <user>]
 #               [--image-registry-password <password>]
 #
@@ -34,13 +34,21 @@
 #                               to $HOME as template files to complete by hand.
 #   --do-dns-access-token       DigitalOcean API token, enabling an additional
 #                               DNS-01 ClusterIssuer (needed for wildcard certs).
-#   --gateway-api               Provision the Gateway API rather than the Ingress
-#                               API. The nginx ingress controller is not
-#                               installed; k3s's bundled traefik is kept instead
-#                               and its Gateway API provider enabled, which also
-#                               brings in the Gateway API CRDs. A Gateway named
+#   --nginx-ingress             Provision the legacy Ingress API rather than the
+#                               Gateway API: k3s's bundled traefik is disabled
+#                               and the nginx ingress controller is installed
+#                               instead, with per-application Let's Encrypt
+#                               certificates obtained over HTTP-01 from Ingress
+#                               resources. Note that ingress-nginx is retired
+#                               upstream and no longer receives fixes of any
+#                               kind, including security fixes.
+#
+#                               Without this option the Gateway API is
+#                               provisioned: traefik is kept and its Gateway API
+#                               provider enabled, which also brings in the
+#                               Gateway API CRDs; a Gateway named
 #                               "stack-gateway" is created in the kube-system
-#                               namespace, accepting routes from all namespaces,
+#                               namespace, accepting routes from all namespaces;
 #                               and cert-manager's Gateway API support is turned
 #                               on.
 #
@@ -63,8 +71,8 @@
 #                               support is beta.
 #   --wildcard-domain           Domain to obtain a wildcard certificate for, e.g.
 #                               "example.com" for a "*.example.com" certificate,
-#                               served by the Gateway's HTTPS listener. Only
-#                               meaningful with --gateway-api, and requires
+#                               served by the Gateway's HTTPS listener. Not
+#                               compatible with --nginx-ingress, and requires
 #                               --do-dns-access-token, because a wildcard
 #                               certificate can only be issued over DNS-01.
 #
@@ -116,7 +124,7 @@ IMAGE_REGISTRY_PASSWORD=""
 LETSENCRYPT_EMAIL=""
 NEEDS_WARN=true
 TLS_SAN_ARGS=""
-GATEWAY_API=false
+GATEWAY_API=true
 WILDCARD_DOMAIN=""
 
 # The Gateway that workloads attach their HTTPRoutes to, and the name of the
@@ -155,6 +163,11 @@ while (( "$#" )); do
       --do-dns-access-token)
          shift&&DO_TOKEN="$(echo -n "$1" | base64 -w0)"||die
          ;;
+      --nginx-ingress)
+         GATEWAY_API=false
+         ;;
+      # The Gateway API is now the default, so this is accepted but does
+      # nothing, for the benefit of callers that still pass it.
       --gateway-api)
          GATEWAY_API=true
          ;;
@@ -173,7 +186,7 @@ done
 # than provisioning a Gateway whose HTTPS listener can never become ready.
 if [[ -n "$WILDCARD_DOMAIN" ]]; then
   if [[ "$GATEWAY_API" != "true" ]]; then
-    die "--wildcard-domain requires --gateway-api"
+    die "--wildcard-domain is not compatible with --nginx-ingress: a wildcard certificate is served by the Gateway's HTTPS listener"
   fi
   if [[ -z "$DO_TOKEN" ]]; then
     die "--wildcard-domain requires --do-dns-access-token, since a wildcard certificate can only be issued over DNS-01"
