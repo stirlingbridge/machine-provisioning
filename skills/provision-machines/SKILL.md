@@ -91,6 +91,13 @@ Decision guidance:
   `--letsencrypt-email`) — one `*.<domain>` DNS-01 certificate covering every
   app. For the roll-your-own-Vercel case: many apps under one domain,
   hostnames created dynamically.
+- **`--letsencrypt-staging`** — issue from Let's Encrypt staging rather than
+  production, in combination with either of the two above. Certificates are
+  signed by an untrusted root and clients reject them, so this is only for
+  proving out DNS/firewall/listener configuration on a machine that is not yet
+  serving users; re-running without it moves the machine to production certs.
+  Suggest it when a user is iterating on a machine that keeps failing issuance,
+  which is how the production rate limit gets exhausted.
 - **`--nginx-ingress`** — legacy Ingress API instead of Gateway API. Only for
   compatibility needs: ingress-nginx is retired upstream and receives no fixes,
   including security fixes. Do not choose this for new machines.

@@ -17,6 +17,7 @@
 #
 # Usage:
 #   k3s-node.sh [-y] [--letsencrypt-email <email>]
+#               [--letsencrypt-staging]
 #               [--do-dns-access-token <token>]
 #               [--tls-san <name>]
 #               [--wildcard-domain <domain>] [--nginx-ingress]
@@ -32,6 +33,21 @@
 #   --letsencrypt-email         Contact address for Let's Encrypt. Without it
 #                               the ClusterIssuers are not created, only written
 #                               to $HOME as template files to complete by hand.
+#   --letsencrypt-staging       Issue certificates from Let's Encrypt's staging
+#                               environment rather than production. The staging
+#                               environment's rate limits are far higher, at the
+#                               cost of certificates signed by an untrusted root:
+#                               browsers and other clients will reject them. Use
+#                               while working out a machine's DNS, firewall and
+#                               listener configuration, so that a broken setup
+#                               does not burn the production rate limit, then
+#                               re-run without this option for real certificates.
+#
+#                               Both the production and staging ClusterIssuers
+#                               are always created; this option selects which of
+#                               them the Gateway is annotated with, i.e. which
+#                               one is used for certificates that this script's
+#                               Gateway causes to be issued.
 #   --do-dns-access-token       DigitalOcean API token, enabling an additional
 #                               DNS-01 ClusterIssuer (needed for wildcard certs).
 #   --nginx-ingress             Provision the legacy Ingress API rather than the
@@ -122,6 +138,7 @@ IMAGE_REGISTRY=""
 IMAGE_REGISTRY_USERNAME=""
 IMAGE_REGISTRY_PASSWORD=""
 LETSENCRYPT_EMAIL=""
+LETSENCRYPT_STAGING=false
 NEEDS_WARN=true
 TLS_SAN_ARGS=""
 GATEWAY_API=true
@@ -147,6 +164,9 @@ while (( "$#" )); do
          ;;
       --letsencrypt-email)
          shift&&LETSENCRYPT_EMAIL="$1"||die
+         ;;
+      --letsencrypt-staging)
+         LETSENCRYPT_STAGING=true
          ;;
       --image-registry)
          shift&&IMAGE_REGISTRY="$1"||die
@@ -194,6 +214,26 @@ if [[ -n "$WILDCARD_DOMAIN" ]]; then
   if [[ -z "$LETSENCRYPT_EMAIL" ]]; then
     die "--wildcard-domain requires --letsencrypt-email"
   fi
+fi
+
+# All four ClusterIssuers are created below; these name the two that anything
+# provisioned by this script points at. Staging and production differ only in
+# the ACME server they talk to, so the choice is made once here and used both
+# for the Gateway's annotation and for the closing advice printed to the user.
+if [[ "$LETSENCRYPT_STAGING" == "true" ]]; then
+  HTTP01_ISSUER="letsencrypt-staging"
+  DNS01_ISSUER="letsencrypt-staging-dns"
+else
+  HTTP01_ISSUER="letsencrypt-prod"
+  DNS01_ISSUER="letsencrypt-prod-dns"
+fi
+# The issuer the Gateway is annotated with: in wildcard mode the certificate can
+# only be issued over DNS-01, otherwise HTTP-01 covers the per-application
+# listeners that the stack utility adds later.
+if [[ -n "$WILDCARD_DOMAIN" ]]; then
+  GATEWAY_ISSUER="$DNS01_ISSUER"
+else
+  GATEWAY_ISSUER="$HTTP01_ISSUER"
 fi
 
 function retry {
@@ -349,10 +389,9 @@ echo "Creating the ${GATEWAY_NAME} Gateway"
 #
 # The cluster-issuer annotation is how cert-manager knows to issue certificates
 # for this Gateway's HTTPS listeners; cert-manager is installed further below,
-# and the annotation is inert until then. In wildcard mode the certificate can
-# only be issued over DNS-01, so the DNS issuer is named; otherwise the HTTP-01
-# issuer is named, covering the per-application listeners that the stack
-# utility adds later.
+# and the annotation is inert until then. Which issuer is named was decided
+# above, from --wildcard-domain (DNS-01 vs HTTP-01) and --letsencrypt-staging
+# (staging vs production ACME server).
 gateway_manifest_file=$(mktemp)
 cat > "$gateway_manifest_file" <<EOF
 apiVersion: gateway.networking.k8s.io/v1
@@ -361,7 +400,7 @@ metadata:
   name: ${GATEWAY_NAME}
   namespace: ${GATEWAY_NAMESPACE}
   annotations:
-    cert-manager.io/cluster-issuer: $([[ -n "$WILDCARD_DOMAIN" ]] && echo "letsencrypt-prod-dns" || echo "letsencrypt-prod")
+    cert-manager.io/cluster-issuer: ${GATEWAY_ISSUER}
 spec:
   gatewayClassName: traefik
   listeners:
@@ -562,6 +601,31 @@ spec:
               key: access-token
 EOF
 
+# The staging counterpart of the above, so that --letsencrypt-staging works in
+# wildcard mode too: a wildcard certificate can only be issued over DNS-01, so
+# without this there would be no staging issuer for the Gateway to name.
+cat > $HOME/letsencrypt-staging-dns01.yml <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging-dns
+  namespace: cert-manager
+spec:
+  acme:
+    # Email address used for ACME registration
+    email: $LETSENCRYPT_EMAIL
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      # Name of a secret used to store the ACME account private key
+      name: letsencrypt-staging
+    solvers:
+      - dns01:
+          digitalocean:
+            tokenSecretRef:
+              name: digitalocean-dns
+              key: access-token
+EOF
+
 if [[ ! -z "$LETSENCRYPT_EMAIL" ]]; then
   echo "Adding letsencrypt-prod ClusterIssuer..."
   retry sudo kubectl apply -f $HOME/letsencrypt-prod.yml
@@ -572,11 +636,19 @@ if [[ ! -z "$LETSENCRYPT_EMAIL" ]]; then
     retry sudo kubectl apply -f $HOME/digitalocean-dns.yml
     echo "Adding letsencrypt-prod-dns ClusterIssuer..."
     retry sudo kubectl apply -f $HOME/letsencrypt-prod-dns01.yml
+    echo "Adding letsencrypt-staging-dns ClusterIssuer..."
+    retry sudo kubectl apply -f $HOME/letsencrypt-staging-dns01.yml
   else
-    echo "No DigitalOcean access token specified, so a DNS-based ClusterIssuer's could not be created.  Template files created at $HOME/digitalocean-dns.yml and $HOME/letsencrypt-prod-dns01.yml"
+    echo "No DigitalOcean access token specified, so a DNS-based ClusterIssuer's could not be created.  Template files created at $HOME/digitalocean-dns.yml, $HOME/letsencrypt-prod-dns01.yml and $HOME/letsencrypt-staging-dns01.yml"
   fi
 else
   echo "No e-mail specified, so ClusterIssuer's could not be created.  Template files created at $HOME/letsencrypt-prod.yml and $HOME/letsencrypt-stage.yml"
+fi
+
+if [[ "$LETSENCRYPT_STAGING" == "true" ]]; then
+  echo "Certificates will be issued from Let's Encrypt's STAGING environment ($GATEWAY_ISSUER):"
+  echo "they are signed by an untrusted root and clients will reject them. Re-run without"
+  echo "--letsencrypt-staging to switch this machine to production certificates."
 fi
 
 echo "Installed cert-manager"
