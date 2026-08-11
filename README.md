@@ -33,6 +33,9 @@ Installs the [stack](https://github.com/bozemanpass/stack) application deploymen
 ### web-shell.sh
 Installs browser-based remote shell access using ttyd, Caddy (with Let's Encrypt TLS), and JWT authentication with asymmetric keys. Supports interactive terminal sessions and programmatic command execution from browser JavaScript. See [examples/web-shell/](examples/web-shell/) for a complete example app and detailed documentation.
 
+## Tests
+Because every script here exists to change the state of a machine, the tests in [tests/](tests/) provision real VMs at DigitalOcean with the [machine](https://github.com/stirlingbridge/machine) utility, run the scripts under test on them, and then assert over SSH (and, for `k3s-node.sh`, over `kubectl`) that the machine really ended up as documented. Each test destroys its VM on exit. `tests/run-static-checks.sh` costs nothing and runs on every pull request; the rest cost a VM apiece and run weekly or on demand. See [tests/README.md](tests/README.md).
+
 ## Example
 Scripts can be used individually, or together to provision more complex machine configurations specifying arguments as shown in the following `~/.machine/config.yaml` example. It provisions a machine that has the `build-essential` package installed, then podman, the stack utility and finally a single node k8s cluster, with appropriate configuration for hosting applications with TLS:
 ```yaml

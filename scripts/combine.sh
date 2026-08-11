@@ -32,9 +32,18 @@ if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi
 
-DEFAULT_SCRIPT_URL_PREFIX="$(dirname ${MACHINE_SCRIPT_URL})"
-if [[ -z "$DEFAULT_SCRIPT_URL_PREFIX" ]]; then
+# Where a bare script name is resolved from: the directory part of the URL this
+# script was itself fetched from, so that a machine provisioned from a branch
+# runs that branch's scripts throughout. $MACHINE_SCRIPT_URL is set by the
+# provisioning tool; falling back to main covers running this script by hand.
+#
+# Test the variable rather than the result of dirname: with the variable empty
+# dirname yields "." if its argument is quoted and an error if it is not, and
+# neither is a directory to resolve scripts from.
+if [[ -z "$MACHINE_SCRIPT_URL" ]]; then
   DEFAULT_SCRIPT_URL_PREFIX="https://raw.githubusercontent.com/stirlingbridge/machine-provisioning/refs/heads/main/scripts"
+else
+  DEFAULT_SCRIPT_URL_PREFIX="$(dirname "$MACHINE_SCRIPT_URL")"
 fi
 
 export DEBIAN_FRONTEND=noninteractive
