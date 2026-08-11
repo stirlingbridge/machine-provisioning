@@ -21,6 +21,7 @@
 #               [--do-dns-access-token <token>]
 #               [--tls-san <name>]
 #               [--wildcard-domain <domain>] [--nginx-ingress]
+#               [--kata]
 #               [--image-registry <host>] [--image-registry-username <user>]
 #               [--image-registry-password <password>]
 #
@@ -100,6 +101,44 @@
 #                               and HTTPS listeners with individual HTTP-01
 #                               certificates are added per application (by the
 #                               stack utility at deploy time, or by hand).
+#   --kata                      Additionally install Kata Containers, so that a
+#                               pod can be run inside its own lightweight VM
+#                               with its own kernel, rather than sharing the
+#                               host's kernel as an ordinary container does.
+#
+#                               This is opt-in per workload: the installation
+#                               creates RuntimeClasses ("kata", and
+#                               "kata-qemu-runtime-rs" naming the shim
+#                               explicitly), and only a pod that asks for one
+#                               gets a VM:
+#
+#                                 spec:
+#                                   runtimeClassName: kata
+#
+#                               Everything else -- k3s's own system pods,
+#                               traefik, cert-manager, and any workload that
+#                               says nothing about a runtime class -- keeps
+#                               running as an ordinary container, and the
+#                               cluster is otherwise unchanged. Nothing about
+#                               the cluster's external behaviour differs.
+#
+#                               Kata is installed with upstream's kata-deploy
+#                               helm chart, whose DaemonSet places the shim,
+#                               hypervisor, guest kernel and guest rootfs on the
+#                               node, reconfigures k3s's containerd and restarts
+#                               k3s. Only the default hypervisor for the
+#                               architecture is installed, not the full set that
+#                               the chart can install.
+#
+#                               A VM needs hardware virtualization, which on a
+#                               cloud machine means the provider must allow
+#                               nested virtualization. This is checked before
+#                               anything is installed, and the script fails
+#                               there if the host cannot create a VM, rather
+#                               than leaving a cluster whose kata RuntimeClass
+#                               never starts a pod. Expect pods on a kata
+#                               RuntimeClass to start more slowly and to use
+#                               more memory than ordinary ones.
 #   --image-registry            Host name of a container image registry, and the
 #   --image-registry-username   credentials to authenticate to it with, so that
 #   --image-registry-password   the cluster can pull private images from it.
@@ -143,6 +182,7 @@ NEEDS_WARN=true
 TLS_SAN_ARGS=""
 GATEWAY_API=true
 WILDCARD_DOMAIN=""
+KATA=false
 
 # The Gateway that workloads attach their HTTPRoutes to, and the name of the
 # secret its wildcard HTTPS listener (if any) reads its certificate from. The
@@ -194,6 +234,9 @@ while (( "$#" )); do
       --wildcard-domain)
          shift&&WILDCARD_DOMAIN="$1"||die "--wildcard-domain requires a value"
          ;;
+      --kata)
+         KATA=true
+         ;;
          *)
          echo "Unrecognized argument: $1" 1>&2
          ;;
@@ -214,6 +257,114 @@ if [[ -n "$WILDCARD_DOMAIN" ]]; then
   if [[ -z "$LETSENCRYPT_EMAIL" ]]; then
     die "--wildcard-domain requires --letsencrypt-email"
   fi
+fi
+
+# Kata runs each pod in a real VM, so the host has to be able to create one. On
+# a cloud machine that means the provider has to allow nested virtualization,
+# which several do not, and which is not something a machine advertises: the
+# only honest way to know is to ask the kernel to make a VM.
+#
+# This runs here, before the confirmation prompt and before anything at all is
+# installed, so that a machine that cannot do it is rejected outright. The
+# alternative is a fully provisioned cluster whose kata RuntimeClass silently
+# fails to start any pod, which is a much worse thing to discover.
+function check_virtualization {
+  local arch
+  arch=$(uname -m)
+
+  case "$arch" in
+    x86_64)
+      # The CPU flag the hypervisor exposes to us: vmx on Intel, svm on AMD.
+      # Without it the kernel cannot load its KVM module at all, and this is
+      # precisely what a provider that disallows nested virtualization hides.
+      if ! grep -Eq '^flags[[:space:]]*:.*[[:space:]](vmx|svm)([[:space:]]|$)' /proc/cpuinfo; then
+        die "this machine's CPU exposes neither the vmx nor the svm virtualization flag, so it cannot run Kata Containers.
+On a cloud machine that usually means the provider does not allow nested
+virtualization on this instance type or in this region. Provision without
+--kata, or use a machine that does."
+      fi
+      ;;
+    aarch64)
+      # arm64 virtualization is not a CPU flag but a matter of the machine
+      # being booted at the right exception level, which /dev/kvm and the
+      # ioctl check below report on directly.
+      ;;
+    *)
+      die "Kata Containers is not supported on $arch by this script (kata-deploy ships x86_64 and aarch64 artifacts)"
+      ;;
+  esac
+
+  # The modules are normally autoloaded when the flag is present, but not on
+  # every image, and a missing /dev/kvm below would then be misreported as the
+  # host refusing virtualization. Only attempted when there is no /dev/kvm
+  # already: this runs before the confirmation prompt, so on a machine that
+  # needs nothing it should change nothing.
+  if [[ ! -e /dev/kvm ]]; then
+    sudo modprobe kvm_intel 2>/dev/null || sudo modprobe kvm_amd 2>/dev/null || sudo modprobe kvm 2>/dev/null || true
+  fi
+
+  if [[ ! -e /dev/kvm ]]; then
+    die "/dev/kvm does not exist, so this machine cannot run Kata Containers.
+The KVM kernel module is not loaded and could not be loaded. On a cloud machine
+this usually means nested virtualization is not available here."
+  fi
+
+  # Everything above is circumstantial. This is the real check: open the device
+  # and ask KVM to create a VM, which is exactly what the hypervisor will do for
+  # every kata pod. KVM_GET_API_VERSION is _IO(0xAE, 0x00) and has answered 12
+  # since 2007; KVM_CREATE_VM is _IO(0xAE, 0x01) and returns a file descriptor
+  # for the new VM.
+  #
+  # python3 is present on the Debian and Ubuntu cloud images (cloud-init is
+  # written in it), but this script can also be run by hand somewhere it is not,
+  # and the checks above are worth having on their own.
+  if ! command -v python3 > /dev/null 2>&1; then
+    echo "WARNING: python3 is not installed, so /dev/kvm was not exercised."
+    echo "The CPU and module checks passed; if this host still cannot create a VM,"
+    echo "that will not show up until a pod on a kata RuntimeClass fails to start."
+    return 0
+  fi
+
+  local kvm_error
+  if ! kvm_error=$(sudo python3 - <<'PYEOF' 2>&1
+import fcntl, os, sys
+
+KVM_GET_API_VERSION = 0xAE00
+KVM_CREATE_VM = 0xAE01
+
+try:
+    fd = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
+except OSError as e:
+    sys.exit("cannot open /dev/kvm: %s" % e)
+
+try:
+    version = fcntl.ioctl(fd, KVM_GET_API_VERSION, 0)
+except OSError as e:
+    sys.exit("KVM_GET_API_VERSION failed: %s" % e)
+if version != 12:
+    sys.exit("unexpected KVM API version %d (expected 12)" % version)
+
+try:
+    vm = fcntl.ioctl(fd, KVM_CREATE_VM, 0)
+except OSError as e:
+    sys.exit("KVM_CREATE_VM failed: %s" % e)
+os.close(vm)
+os.close(fd)
+PYEOF
+  ); then
+    die "this machine cannot create a virtual machine, so it cannot run Kata Containers: ${kvm_error}
+/dev/kvm is present but unusable. On a cloud machine this usually means nested
+virtualization is not really available on this instance type or in this region.
+Provision without --kata, or use a machine that does support it."
+  fi
+
+  echo "This machine can create VMs (KVM is present and usable)"
+}
+
+if [[ "$KATA" == "true" ]]; then
+  echo "**************************************************************************************"
+  echo "Checking that this machine can run virtual machines, as --kata requires"
+  check_virtualization
 fi
 
 # All four ClusterIssuers are created below; these name the two that anything
@@ -653,6 +804,90 @@ fi
 
 echo "Installed cert-manager"
 
+if [[ "$KATA" == "true" ]]; then
+
+echo "**************************************************************************************"
+echo "Installing Kata Containers"
+
+# Upstream's kata-deploy helm chart is the supported way to install Kata into an
+# existing cluster, and it knows about k3s specifically: with k8sDistribution=k3s
+# its DaemonSet writes k3s's containerd configuration under
+# /var/lib/rancher/k3s/agent/etc/containerd, restarts the k3s systemd unit and
+# waits for the node to come back Ready. Doing any of that by hand here would be
+# a copy of upstream's work that goes stale.
+#
+# k3s has a helm controller built in, but its support for charts served from an
+# OCI registry (which this one is) varies by k3s version, and a failure inside
+# the controller is much harder to read than one from the CLI.
+echo "Installing the helm CLI"
+helm_installer_file=$HOME/install-helm.sh
+curl -sfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 -o "${helm_installer_file}"
+chmod +x "${helm_installer_file}"
+"${helm_installer_file}"
+
+# As with every other component here, the latest release is installed rather
+# than a pinned version. The chart is published per Kata release under the same
+# version as the release tag.
+KATA_VERSION=$(curl -sSL https://api.github.com/repos/kata-containers/kata-containers/releases/latest | jq -r '.tag_name') || KATA_VERSION=""
+if [[ -z "$KATA_VERSION" || "$KATA_VERSION" == "null" ]]; then
+  die "could not determine the latest Kata Containers release from the GitHub API"
+fi
+echo "Installing Kata Containers $KATA_VERSION"
+
+# The chart installs every hypervisor it knows about by default, each with its
+# own RuntimeClass and its own artifacts on the node. Only the default shim for
+# the architecture is wanted here -- qemu-runtime-rs, on both architectures this
+# script allows --kata on -- since it is what the "kata" RuntimeClass points at.
+# The rest are for confidential computing, other hypervisors, and hardware this
+# machine does not have.
+#
+# runtimeClasses.createDefault gives the short name "kata" alongside the
+# shim-specific "kata-qemu-runtime-rs", so a workload can name a runtime class
+# without naming the hypervisor -- the same reasoning as the Gateway above, where
+# nothing in a workload names traefik.
+#
+# snapshotter.setup is emptied: the nydus snapshotter it would otherwise install
+# as a host service is only used by the confidential and remote shims, which are
+# not installed. The qemu shim uses containerd's default snapshotter.
+#
+# "upgrade --install" rather than "install" because retry runs this again after a
+# failure, and a second "install" of a release that partially succeeded fails on
+# the name already being in use rather than on whatever went wrong the first time.
+retry sudo helm upgrade --install kata-deploy \
+  oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
+  --kubeconfig /etc/rancher/k3s/k3s.yaml \
+  --version "$KATA_VERSION" \
+  --namespace kube-system \
+  --set k8sDistribution=k3s \
+  --set runtimeClasses.createDefault=true \
+  --set shims.disableAll=true \
+  --set shims.qemu-runtime-rs.enabled=true \
+  --set 'snapshotter.setup={}' \
+  || die "failed to install the kata-deploy helm chart"
+
+# The DaemonSet has a large image to pull and a lot to unpack onto the node, and
+# it restarts k3s when it reconfigures containerd -- so the API server goes away
+# underneath these calls, which is what retry is here for. Each attempt is given
+# a short timeout rather than one long one: a wait that was interrupted by the
+# k3s restart simply resumes on the next attempt.
+echo "Waiting for kata-deploy to install Kata on this node..."
+if ! retry sudo kubectl rollout status daemonset/kata-deploy --namespace kube-system --timeout=300s; then
+  die "the kata-deploy DaemonSet did not become ready; check with: sudo kubectl logs daemonset/kata-deploy --namespace kube-system"
+fi
+
+# kata-deploy claims the node with katacontainers.io/kata-runtime=false before it
+# writes anything, and only promotes the label to "true" once the node really is
+# able to run kata workloads. So this, and not the DaemonSet being ready, is what
+# says the installation worked.
+if ! retry sudo kubectl wait --for=jsonpath='{.metadata.labels.katacontainers\.io/kata-runtime}'=true \
+    node --all --timeout=300s; then
+  die "the node was not labelled katacontainers.io/kata-runtime=true, so Kata was not fully installed; check with: sudo kubectl logs daemonset/kata-deploy --namespace kube-system"
+fi
+
+echo "Installed Kata Containers"
+
+fi
+
 echo "**************************************************************************************"
 echo "Configuring image registry credentials"
 
@@ -758,5 +993,38 @@ if [[ "$GATEWAY_API" == "true" ]]; then
     echo "        certificateRefs:"
     echo "          - name: my-app-tls"
   fi
+  echo
+fi
+
+if [[ "$KATA" == "true" ]]; then
+  echo "**************************************************************************************"
+  echo "This machine can run pods inside lightweight VMs with Kata Containers. That is"
+  echo "opt-in per pod: name a kata RuntimeClass in the pod spec, and only that pod gets a"
+  echo "VM of its own."
+  echo
+  echo "  apiVersion: apps/v1"
+  echo "  kind: Deployment"
+  echo "  spec:"
+  echo "    template:"
+  echo "      spec:"
+  echo "        runtimeClassName: kata"
+  echo "        containers:"
+  echo "          - name: my-app"
+  echo "            image: my-app:latest"
+  echo
+  echo "Pods that say nothing about a runtime class -- including k3s's own system pods and"
+  echo "everything this script installed -- keep running as ordinary containers."
+  echo
+  echo "See the runtime classes that were created with:"
+  echo
+  echo "  sudo k3s kubectl get runtimeclass"
+  echo
+  echo "\"kata\" is the one to name; it points at this machine's default hypervisor. A pod"
+  echo "on it boots its own kernel, so it starts more slowly and uses more memory than an"
+  echo "ordinary container. Check that it really is in a VM by comparing its kernel with"
+  echo "the host's:"
+  echo
+  echo "  uname -r"
+  echo "  sudo k3s kubectl exec <pod> -- uname -r"
   echo
 fi

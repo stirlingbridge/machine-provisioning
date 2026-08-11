@@ -70,32 +70,10 @@ assert_ssh_output "cat /etc/machine/fqdn" "^${TEST_MACHINE_FQDN}\$" \
 
 # --- a kubeconfig that works from here ----------------------------------------
 
-# The kubeconfig k3s writes names the local address. Substituting the machine's
-# FQDN yields one that works remotely -- but only because k3s-node.sh put
-# $MACHINE_FQDN in the API server's certificate as a tls-san, so every kubectl
-# call below is also an assertion that it did.
-kube_config=$TEST_WORK_DIR/kubeconfig
-ssh_machine "sudo cat /etc/rancher/k3s/k3s.yaml" | sed "s/127.0.0.1/${TEST_MACHINE_FQDN}/g" > "$kube_config"
-chmod 600 "$kube_config"
-export KUBECONFIG=$kube_config
-
-if ! grep -q "$TEST_MACHINE_FQDN" "$kube_config"; then
-  fail "could not fetch a usable kubeconfig from the machine"
-fi
-pass "fetched a kubeconfig from the machine"
+fetch_kubeconfig
 
 # Dump what the cluster was doing if anything below fails: the VM is destroyed
 # on exit, so this is the only chance to capture it.
-dump_cluster_state () {
-  echo "----- cluster state at failure -----"
-  kubectl get nodes -o wide || true
-  kubectl get pods -A -o wide || true
-  kubectl get gateway,httproute -A || true
-  kubectl get ingress -A || true
-  kubectl get clusterissuer,certificate,order,challenge -A || true
-  kubectl describe gateway -A || true
-  echo "------------------------------------"
-}
 # shellcheck disable=SC2034  # read by the teardown in lib/common.sh
 TEST_DIAGNOSTICS_FN=dump_cluster_state
 
@@ -104,22 +82,6 @@ TEST_DIAGNOSTICS_FN=dump_cluster_state
 kubectl wait --for=condition=Ready node --all --timeout=300s > /dev/null \
   || fail "the node did not become Ready"
 pass "the cluster has a Ready node, reachable at ${TEST_MACHINE_FQDN}:6443"
-
-assert_kubectl_output () {
-  local args=$1
-  local pattern=$2
-  local label=$3
-  local out
-  # shellcheck disable=SC2086  # $args is a deliberately word-split command line
-  out=$( kubectl $args 2>&1 ) || true
-  if echo "$out" | grep -Eq "$pattern"; then
-    pass "$label"
-  else
-    echo "output of 'kubectl $args' was:"
-    echo "$out"
-    fail "$label - '$pattern' not found in the output"
-  fi
-}
 
 assert_kubectl_output "get --raw /version" '"gitVersion".*k3s' \
   "the API server reports a k3s version"
@@ -184,63 +146,10 @@ fi
 # internet.
 banner "Deploying a workload and reaching it through the cluster"
 
-kubectl create namespace e2e-test > /dev/null
-kubectl create deployment e2e-whoami --image=traefik/whoami --namespace e2e-test > /dev/null
-kubectl expose deployment e2e-whoami --port=80 --target-port=80 --namespace e2e-test > /dev/null
-kubectl wait --for=condition=Available deployment/e2e-whoami --namespace e2e-test --timeout=300s > /dev/null \
-  || fail "the test workload did not become available"
-pass "the test workload is running"
+deploy_whoami e2e-test
 
 if [ "$E2E_K3S_MODE" == "gateway" ]; then
-  # sectionName names the Gateway's HTTP listener, which k3s-node.sh calls
-  # "web"; this is the same shape of HTTPRoute the stack utility creates.
-  kubectl apply -f - <<EOF > /dev/null
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: e2e-whoami
-  namespace: e2e-test
-spec:
-  parentRefs:
-    - name: stack-gateway
-      namespace: kube-system
-      sectionName: web
-  hostnames:
-    - ${TEST_MACHINE_FQDN}
-  rules:
-    - backendRefs:
-        - name: e2e-whoami
-          port: 80
-EOF
-  kubectl wait --for=jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}'=True \
-    httproute/e2e-whoami --namespace e2e-test --timeout=120s > /dev/null \
-    || fail "the HTTPRoute was not accepted by the Gateway"
-  pass "the HTTPRoute was accepted by the stack-gateway Gateway"
+  route_whoami_gateway e2e-test
 else
-  kubectl apply -f - <<EOF > /dev/null
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: e2e-whoami
-  namespace: e2e-test
-spec:
-  ingressClassName: nginx
-  rules:
-    - host: ${TEST_MACHINE_FQDN}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: e2e-whoami
-                port:
-                  number: 80
-EOF
-  pass "created an Ingress for the test workload"
+  route_whoami_ingress e2e-test
 fi
-
-# whoami echoes the request back, so "Hostname:" in the body is proof that the
-# request reached the pod rather than being answered by the proxy.
-assert_url_content "http://${TEST_MACHINE_FQDN}/" "^Hostname:" \
-  "the workload is served over HTTP at ${TEST_MACHINE_FQDN}"

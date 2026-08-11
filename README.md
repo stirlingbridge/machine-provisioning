@@ -23,7 +23,11 @@ By default the cluster serves application traffic through the [Gateway API](http
 
 Whichever of those two is used, `--letsencrypt-staging` points the Gateway at Let's Encrypt's staging environment instead of production. Staging has far higher rate limits but issues certificates signed by an untrusted root, which clients reject, so it is for shaking out a machine's DNS, firewall and listener configuration without burning the production rate limit. Re-running the script without the option switches the machine back to production certificates.
 
-Passing `--nginx-ingress` provisions the legacy Ingress API instead, using the nginx ingress controller with per-application Let's Encrypt certificates from cert-manager. Note that [ingress-nginx is retired upstream](https://www.kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/) and no longer receives fixes of any kind, including security fixes. The comment at the top of the script documents all of the script's options.
+Passing `--nginx-ingress` provisions the legacy Ingress API instead, using the nginx ingress controller with per-application Let's Encrypt certificates from cert-manager. Note that [ingress-nginx is retired upstream](https://www.kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/) and no longer receives fixes of any kind, including security fixes.
+
+Passing `--kata` additionally installs [Kata Containers](https://katacontainers.io/), so that a pod can be run inside its own lightweight VM with its own kernel rather than sharing the host's. It is opt-in per workload: the installation (upstream's `kata-deploy` helm chart, which knows how to reconfigure k3s's containerd) creates a `kata` RuntimeClass, and only a pod whose spec sets `runtimeClassName: kata` gets a VM. Everything else — k3s's own system pods, traefik, cert-manager, and any workload that says nothing about a runtime class — keeps running as an ordinary container, and the cluster is otherwise indistinguishable from one provisioned without the option. A VM needs hardware virtualization, so on a cloud machine the provider must allow nested virtualization; the script checks that the host really can create a VM before it installs anything, and fails there if it cannot.
+
+The comment at the top of the script documents all of the script's options.
 ### packages.sh
 Installs the distro packages named in its arguments, which are passed through to `apt install`.
 ### podman.sh
