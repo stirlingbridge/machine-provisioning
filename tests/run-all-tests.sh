@@ -14,8 +14,8 @@
 #   run-all-tests.sh [--static-only] [<test> ...]
 #
 #   --static-only  Run only the checks that cost nothing.
-#   <test>         Name of a test to run (k3s, combine, error). The default is
-#                  all of them.
+#   <test>         Name of a test to run (k3s, kata, combine, error). The
+#                  default is all of them.
 #
 tests_dir=$( cd "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )
 
@@ -29,7 +29,7 @@ for arg in "$@"; do
   esac
 done
 if [ ${#requested[@]} -eq 0 ]; then
-  requested=(combine error k3s)
+  requested=(combine error k3s kata)
 fi
 
 failed=()

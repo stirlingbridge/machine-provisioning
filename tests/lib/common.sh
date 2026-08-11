@@ -344,6 +344,196 @@ dump_cloud_init_log () {
   echo "-----------------------------------------------------------"
 }
 
+# --- kubernetes --------------------------------------------------------------
+#
+# For the tests of machines provisioned with k3s-node.sh. Everything here talks
+# to the cluster from *here*, over a kubeconfig fetched from the machine, rather
+# than over ssh -- which is the point: it asserts on the cluster as a user of it
+# would see it, and not on what the provisioning script believes it did.
+
+# Fetch a kubeconfig from the machine and export KUBECONFIG so that every
+# kubectl call after this one talks to it.
+#
+# The kubeconfig k3s writes names the local address. Substituting the machine's
+# FQDN yields one that works remotely -- but only because k3s-node.sh put
+# $MACHINE_FQDN in the API server's certificate as a tls-san, so every kubectl
+# call a test makes is also an assertion that it did.
+fetch_kubeconfig () {
+  local kube_config=$TEST_WORK_DIR/kubeconfig
+  ssh_machine "sudo cat /etc/rancher/k3s/k3s.yaml" | sed "s/127.0.0.1/${TEST_MACHINE_FQDN}/g" > "$kube_config"
+  chmod 600 "$kube_config"
+  export KUBECONFIG=$kube_config
+
+  if ! grep -q "$TEST_MACHINE_FQDN" "$kube_config"; then
+    fail "could not fetch a usable kubeconfig from the machine"
+  fi
+  pass "fetched a kubeconfig from the machine"
+}
+
+# Assert that the output of a kubectl invocation matches an extended regular
+# expression. $1 is the argument line (deliberately word-split), $2 the pattern,
+# $3 the label reported.
+assert_kubectl_output () {
+  local args=$1
+  local pattern=$2
+  local label=$3
+  local out
+  # shellcheck disable=SC2086  # $args is a deliberately word-split command line
+  out=$( kubectl $args 2>&1 ) || true
+  if echo "$out" | grep -Eq "$pattern"; then
+    pass "$label"
+  else
+    echo "output of 'kubectl $args' was:"
+    echo "$out"
+    fail "$label - '$pattern' not found in the output"
+  fi
+}
+
+# What the cluster was doing when something failed. Register it with
+# TEST_DIAGNOSTICS_FN: the VM is destroyed on exit, so this is the only chance
+# to capture it.
+dump_cluster_state () {
+  echo "----- cluster state at failure -----"
+  kubectl get nodes -o wide || true
+  kubectl get pods -A -o wide || true
+  kubectl get gateway,httproute -A || true
+  kubectl get ingress -A || true
+  kubectl get clusterissuer,certificate,order,challenge -A || true
+  kubectl get runtimeclass || true
+  kubectl describe gateway -A || true
+  echo "------------------------------------"
+}
+
+# Deploy the whoami workload into its own namespace. $1 is the namespace to
+# create and use, and $2 optionally names a RuntimeClass to run it on -- the
+# kata test runs this same workload in a VM, and it has to end up reachable in
+# exactly the same way as an ordinary one.
+#
+# Pair it with route_whoami_gateway or route_whoami_ingress, which route to it
+# and then fetch it from here: everything a "kubectl get" can tell you is that
+# the pieces exist, and those say that they work.
+deploy_whoami () {
+  local namespace=$1
+  local runtime_class=${2:-}
+  local runtime_class_field=""
+
+  if [ -n "$runtime_class" ]; then
+    runtime_class_field="      runtimeClassName: ${runtime_class}"
+  fi
+
+  kubectl create namespace "$namespace" > /dev/null
+
+  # whoami echoes the request back, so "Hostname:" in the body is proof that a
+  # request reached the pod rather than being answered by the proxy.
+  kubectl apply -f - <<EOF > /dev/null
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e2e-whoami
+  namespace: ${namespace}
+spec:
+  selector:
+    matchLabels:
+      app: e2e-whoami
+  template:
+    metadata:
+      labels:
+        app: e2e-whoami
+    spec:
+${runtime_class_field}
+      containers:
+        - name: whoami
+          image: traefik/whoami
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: e2e-whoami
+  namespace: ${namespace}
+spec:
+  selector:
+    app: e2e-whoami
+  ports:
+    - port: 80
+      targetPort: 80
+EOF
+
+  # A pod in a VM has a guest kernel and a rootfs to boot before the container
+  # starts, on a machine whose nested virtualization is not fast, so allow
+  # longer than the plain-container case would need.
+  kubectl wait --for=condition=Available deployment/e2e-whoami --namespace "$namespace" --timeout=600s > /dev/null \
+    || fail "the test workload did not become available"
+  pass "the test workload is running${runtime_class:+ on RuntimeClass $runtime_class}"
+}
+
+# Route the whoami workload in namespace $1 through the Gateway that
+# k3s-node.sh creates, and fetch it from here by the machine's hostname over the
+# public internet.
+route_whoami_gateway () {
+  local namespace=$1
+
+  # sectionName names the Gateway's HTTP listener, which k3s-node.sh calls
+  # "web"; this is the same shape of HTTPRoute the stack utility creates.
+  kubectl apply -f - <<EOF > /dev/null
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: e2e-whoami
+  namespace: ${namespace}
+spec:
+  parentRefs:
+    - name: stack-gateway
+      namespace: kube-system
+      sectionName: web
+  hostnames:
+    - ${TEST_MACHINE_FQDN}
+  rules:
+    - backendRefs:
+        - name: e2e-whoami
+          port: 80
+EOF
+  kubectl wait --for=jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}'=True \
+    httproute/e2e-whoami --namespace "$namespace" --timeout=120s > /dev/null \
+    || fail "the HTTPRoute was not accepted by the Gateway"
+  pass "the HTTPRoute was accepted by the stack-gateway Gateway"
+
+  assert_url_content "http://${TEST_MACHINE_FQDN}/" "^Hostname:" \
+    "the workload is served over HTTP at ${TEST_MACHINE_FQDN}"
+}
+
+# The nginx counterpart of route_whoami_gateway, for a machine provisioned with
+# k3s-node.sh --nginx-ingress.
+route_whoami_ingress () {
+  local namespace=$1
+
+  kubectl apply -f - <<EOF > /dev/null
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: e2e-whoami
+  namespace: ${namespace}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ${TEST_MACHINE_FQDN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: e2e-whoami
+                port:
+                  number: 80
+EOF
+  pass "created an Ingress for the test workload"
+
+  assert_url_content "http://${TEST_MACHINE_FQDN}/" "^Hostname:" \
+    "the workload is served over HTTP at ${TEST_MACHINE_FQDN}"
+}
+
 # --- assertions --------------------------------------------------------------
 
 # Assert that a command run on the machine succeeds. $1 is the command, $2 the

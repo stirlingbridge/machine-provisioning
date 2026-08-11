@@ -21,6 +21,7 @@ provider support, which the machine repository's e2e suite already covers.
 | `run-combine-test.sh` | 1 VM, ~10 min | `combine.sh`, `health.sh`, `fqdn.sh`, `packages.sh`, `podman.sh`, `stack.sh` |
 | `run-error-test.sh` | 1 VM, ~5 min | `error.sh`, and `combine.sh` stopping at the first failure |
 | `run-k3s-test.sh` | 1 VM, ~20 min | `k3s-node.sh` (Gateway API by default, nginx ingress with `E2E_K3S_MODE=ingress`) |
+| `run-kata-test.sh` | 1 larger VM, ~35 min | `k3s-node.sh --kata`, including that a pod on the `kata` RuntimeClass really runs in a VM |
 
 `docker.sh` and `web-shell.sh` are not yet covered. `docker.sh` is an
 alternative to `podman.sh` and needs a machine of its own (installing both on
@@ -42,7 +43,7 @@ So: commit and push before running a test. To test something else, set
 
 - [machine](https://github.com/stirlingbridge/machine) on the PATH
   (`uv tool install git+https://github.com/stirlingbridge/machine.git`)
-- `curl`, `git`, `jq`, `ssh`, and for the k3s test `kubectl`
+- `curl`, `git`, `jq`, `ssh`, and for the k3s and kata tests `kubectl`
 - A DigitalOcean account with an API token, a registered SSH key **and the
   matching private key on this machine** (the tests ssh in to assert), a DNS
   zone hosted at DigitalOcean, and a project to assign the VMs to
@@ -68,7 +69,7 @@ The API token needs the same scopes as the machine utility's own e2e tests:
 | `E2E_SSH_KEY_FILE` | Path to the matching private key file |
 | `E2E_DO_DNS_ZONE` | DNS zone hosted at DigitalOcean (e.g. `do.example.com`) |
 | `E2E_PROJECT` | DigitalOcean project to assign the VMs to |
-| `E2E_LETSENCRYPT_EMAIL` | Let's Encrypt contact address (`run-k3s-test.sh` only) |
+| `E2E_LETSENCRYPT_EMAIL` | Let's Encrypt contact address (`run-k3s-test.sh` and `run-kata-test.sh` only) |
 
 The names follow the machine repository's `E2E_*` convention, with
 `E2E_SSH_KEY_FILE` added: those tests only drive the CLI, whereas these ssh
@@ -80,9 +81,9 @@ into the machine they made.
 |---|---|---|
 | `E2E_REGION` | `nyc3` | DigitalOcean region |
 | `E2E_IMAGE` | `ubuntu-24-04-x64` | Machine image |
-| `E2E_SIZE` | `s-1vcpu-2gb` (`s-2vcpu-4gb` for k3s) | Machine size |
+| `E2E_SIZE` | `s-1vcpu-2gb` (`s-2vcpu-4gb` for k3s, `s-4vcpu-8gb` for kata) | Machine size |
 | `E2E_NEW_USER` | `e2euser` | User the provisioning scripts run as |
-| `E2E_PROVISION_TIMEOUT` | `1800` | Seconds to allow for cloud-init |
+| `E2E_PROVISION_TIMEOUT` | `1800` (`2700` for kata) | Seconds to allow for cloud-init |
 | `E2E_PROVISIONING_URL` | this commit's `combine.sh` | Which scripts to test |
 | `E2E_K3S_MODE` | `gateway` | `gateway` or `ingress` (`run-k3s-test.sh`) |
 | `E2E_MACHINE_CMD` | `machine` | The machine command to run |
@@ -109,8 +110,8 @@ export E2E_LETSENCRYPT_EMAIL="me@example.com"
 `run-all-tests.sh` skips the VM tests entirely when `E2E_DO_TOKEN` is unset, so
 running it with no environment at all is a useful pre-commit check.
 
-When a test fails it prints the machine's cloud-init log (and, for the k3s
-test, the state of the cluster) before destroying the VM, because in CI that is
+When a test fails it prints the machine's cloud-init log (and, for the k3s and
+kata tests, the state of the cluster) before destroying the VM, because in CI that is
 the only evidence of what went wrong. To poke at a failure by hand, re-run with
 `E2E_KEEP_MACHINE=1` and the VM is left up — with its DNS record, so remember
 to destroy it:
@@ -158,3 +159,10 @@ The smallest workable machine size is used for each test and the VMs are
 destroyed as soon as the assertions finish, so a full run is a few cents.
 `k3s-node.sh` is tested with `--letsencrypt-staging`, so a run cannot consume
 the production certificate rate limit.
+
+The kata test is the expensive one: a larger machine, held for longer, because
+each pod it starts is a VM booting its own kernel under nested virtualization —
+which DigitalOcean allows but neither documents nor makes fast. If nested
+virtualization ever stops being available there, this test fails during
+provisioning with `k3s-node.sh`'s own message saying the host cannot create a
+VM, rather than with a mystery twenty minutes later.

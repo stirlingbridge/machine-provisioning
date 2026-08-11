@@ -13,6 +13,10 @@ name: E2E Test
 #
 # See tests/README.md for the environment the "e2e" GitHub environment must
 # provide.
+#
+# The kata job is the slow and expensive one: it provisions a larger VM and runs
+# pods inside nested VMs on it. Each test script picks its own machine size, so
+# there is nothing to configure for that here.
 
 on:
   workflow_dispatch:
@@ -40,7 +44,7 @@ jobs:
       matrix:
         # One VM per job, run in parallel: a failure in one test should not
         # hide the result of the others.
-        test: [combine, error, k3s]
+        test: [combine, error, k3s, kata]
     steps:
       - name: "Clone project repository"
         uses: actions/checkout@v5
@@ -56,7 +60,7 @@ jobs:
       - name: "Install the machine utility"
         run: uv tool install git+https://github.com/stirlingbridge/machine.git
       - name: "Install kubectl"
-        if: matrix.test == 'k3s'
+        if: matrix.test == 'k3s' || matrix.test == 'kata'
         # v4 runs on node20, which GitHub has deprecated; v5 is node24. No
         # inputs are passed, so the major bump is a drop-in.
         uses: azure/setup-kubectl@v5.1.0
