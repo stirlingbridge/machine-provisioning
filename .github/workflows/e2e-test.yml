@@ -48,11 +48,18 @@ jobs:
         uses: astral-sh/setup-uv@v8.2.0
         with:
           python-version: "3.12"
+          # uv is only an installer for the machine utility here; this
+          # repository has no Python dependency files of its own, so there is
+          # nothing to cache and the default cache warns that it can never be
+          # invalidated.
+          enable-cache: false
       - name: "Install the machine utility"
         run: uv tool install git+https://github.com/stirlingbridge/machine.git
       - name: "Install kubectl"
         if: matrix.test == 'k3s'
-        uses: azure/setup-kubectl@v4
+        # v4 runs on node20, which GitHub has deprecated; v5 is node24. No
+        # inputs are passed, so the major bump is a drop-in.
+        uses: azure/setup-kubectl@v5.1.0
       - name: "Write the SSH key"
         run: |
           mkdir -p ~/.ssh
