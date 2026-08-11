@@ -1,0 +1,23 @@
+name: Static Checks
+
+# The checks that cost nothing: syntax, shellcheck, and the conventions every
+# script here is expected to follow. The tests that provision real machines are
+# in e2e-test.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static-checks:
+    name: "Static checks"
+    runs-on: ubuntu-24.04
+    steps:
+      - name: "Clone project repository"
+        uses: actions/checkout@v5
+      - name: "Install shellcheck"
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: "Run the static checks"
+        run: ./tests/run-static-checks.sh

@@ -1,0 +1,79 @@
+name: E2E Test
+
+# Provisions real DigitalOcean VMs with the scripts in this repository and
+# asserts that they did what they claim to. Costs real money and real minutes,
+# so it is not run per pull request -- run it from the Actions tab against a
+# pushed branch, or wait for the weekly run.
+#
+# The VMs download the scripts from raw.githubusercontent.com, so what is
+# tested is decided by the URL below and not by the checkout: it names the head
+# commit of the branch being run, which must therefore be pushed to this
+# repository. A pull request from a fork has neither that nor the secrets, and
+# is not supported.
+#
+# See tests/README.md for the environment the "e2e" GitHub environment must
+# provide.
+
+on:
+  workflow_dispatch:
+    inputs:
+      k3s-mode:
+        description: "k3s routing arrangement to test"
+        type: choice
+        options: [gateway, ingress]
+        default: gateway
+  schedule:
+    # Run weekly on Monday at 08:00 UTC. The machine and stack repositories run
+    # their own VM-creating suites at 06:00 and 07:00; leave those clear rather
+    # than competing for the same account's droplet limit.
+    - cron: "0 8 * * 1"
+
+jobs:
+  e2e:
+    name: "E2E test (${{ matrix.test }})"
+    runs-on: ubuntu-24.04
+    environment: e2e
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # One VM per job, run in parallel: a failure in one test should not
+        # hide the result of the others.
+        test: [combine, error, k3s]
+    steps:
+      - name: "Clone project repository"
+        uses: actions/checkout@v5
+      - name: "Install uv"
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          python-version: "3.12"
+      - name: "Install the machine utility"
+        run: uv tool install git+https://github.com/stirlingbridge/machine.git
+      - name: "Install kubectl"
+        if: matrix.test == 'k3s'
+        uses: azure/setup-kubectl@v4
+      - name: "Write the SSH key"
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.E2E_SSH_PRIVATE_KEY }}" > ~/.ssh/e2e-key
+          chmod 600 ~/.ssh/e2e-key
+      - name: "Run the ${{ matrix.test }} test"
+        env:
+          E2E_DO_TOKEN: ${{ secrets.E2E_DO_TOKEN }}
+          E2E_SSH_KEY: ${{ vars.E2E_SSH_KEY }}
+          E2E_SSH_KEY_FILE: /home/runner/.ssh/e2e-key
+          E2E_DO_DNS_ZONE: ${{ vars.E2E_DO_DNS_ZONE }}
+          E2E_PROJECT: ${{ vars.E2E_PROJECT }}
+          E2E_LETSENCRYPT_EMAIL: ${{ vars.E2E_LETSENCRYPT_EMAIL }}
+          E2E_K3S_MODE: ${{ inputs.k3s-mode || 'gateway' }}
+          # The scripts under test are fetched by the VM from this URL, so it
+          # has to name the commit being tested rather than the checkout.
+          E2E_PROVISIONING_URL: "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/scripts/combine.sh"
+          # Tag the VMs with the run, so anything leaked can be traced back to
+          # the job that leaked it. It has to differ per job: the leak check
+          # lists everything tagged with the session id, and a shared one would
+          # see a sibling job's VM, still running, as this job's leak.
+          E2E_SESSION_ID: "gha${{ github.run_id }}-${{ matrix.test }}"
+          E2E_DEBUG: ${{ runner.debug }}
+        run: ./tests/run-${{ matrix.test }}-test.sh
