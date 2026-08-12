@@ -4,6 +4,10 @@ These provisioning scripts are designed to be used in conjunction with any Linux
 tool that can execute a script after first boot (typically via the `cloud-init` mechanism), for example
 the [machine](https://github.com/stirlingbridge/machine) utility.
 
+![Creating a cloud VM, provisioning it into a single-node Kubernetes cluster with these scripts, and deploying a three-container application onto it over HTTPS — then destroying the machine again](./docs/images/demo.gif)
+
+_An unedited recording: from nothing, to a machine running k3s, to a running application reached over HTTPS with a real Let's Encrypt certificate, and back to nothing. Regenerate it with `./demo/record-demo.sh` (see [demo/README.md](./demo/README.md))._
+
 ## Scripts
 
 ### combine.sh

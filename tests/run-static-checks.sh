@@ -33,7 +33,7 @@ check_failed () {
 
 banner "static checks"
 
-all_scripts=( scripts/*.sh tests/*.sh tests/lib/*.sh )
+all_scripts=( scripts/*.sh tests/*.sh tests/lib/*.sh demo/*.sh )
 
 # --- syntax -------------------------------------------------------------------
 
