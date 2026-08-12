@@ -285,6 +285,19 @@ Enter
 Wait+Line@120s /^▸$/
 Sleep 2500ms
 
+# ...and mark it done, which is a write that has to reach PostgreSQL and come
+# back changed. The literal id is the one the POST above just printed: the
+# database is created fresh with the deployment a few minutes ago and this is
+# the only row ever inserted into it, so the sequence always hands out 1.
+Type `curl -s -X PUT https://@@FQDN@@/api/todos/1 \`
+Enter
+Type `  -H 'Content-Type: application/json' \`
+Enter
+Type `  -d '{"completed":true}' | jq -c '{id, title, completed}'`
+Enter
+Wait+Line@120s /^▸$/
+Sleep 2500ms
+
 Type `curl -s https://@@FQDN@@/api/todos | jq -c '.[] | {id, title, completed}'`
 Enter
 Wait+Line@120s /^▸$/
