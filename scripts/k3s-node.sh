@@ -3,9 +3,9 @@
 # k3s-node.sh -- install a single-node Kubernetes cluster using k3s, ready for
 # hosting applications with TLS.
 #
-# By default, installs k3s and cert-manager, provisions the Gateway API (k3s's
-# bundled traefik is kept and used as the Gateway API implementation, with a
-# Gateway named "stack-gateway" for workloads to attach their HTTPRoutes to),
+# By default, installs k3s, cert-manager and K8up, provisions the Gateway API
+# (k3s's bundled traefik is kept and used as the Gateway API implementation, with
+# a Gateway named "stack-gateway" for workloads to attach their HTTPRoutes to),
 # and creates Let's Encrypt ClusterIssuers. Debian and Ubuntu only.
 #
 # With --nginx-ingress, the legacy Ingress API is provisioned instead: traefik
@@ -21,7 +21,7 @@
 #               [--do-dns-access-token <token>]
 #               [--tls-san <name>]
 #               [--wildcard-domain <domain>] [--nginx-ingress]
-#               [--kata]
+#               [--kata] [--no-backup]
 #               [--image-registry <host>] [--image-registry-username <user>]
 #               [--image-registry-password <password>]
 #
@@ -101,6 +101,15 @@
 #                               and HTTPS listeners with individual HTTP-01
 #                               certificates are added per application (by the
 #                               stack utility at deploy time, or by hand).
+#   --no-backup                 Do not install K8up, the backup operator. K8up
+#                               is what actually runs backups on this cluster:
+#                               the stack utility only emits the Schedule,
+#                               Backup and Restore resources that reference it,
+#                               the same way it emits resources referencing
+#                               cert-manager. Without it, a deployment with
+#                               backup enabled will fail to deploy, so skip it
+#                               only on a cluster that will never back anything
+#                               up.
 #   --kata                      Additionally install Kata Containers, so that a
 #                               pod can be run inside its own lightweight VM
 #                               with its own kernel, rather than sharing the
@@ -183,6 +192,7 @@ TLS_SAN_ARGS=""
 GATEWAY_API=true
 WILDCARD_DOMAIN=""
 KATA=false
+BACKUP=true
 
 # The Gateway that workloads attach their HTTPRoutes to, and the name of the
 # secret its wildcard HTTPS listener (if any) reads its certificate from. The
@@ -236,6 +246,9 @@ while (( "$#" )); do
          ;;
       --kata)
          KATA=true
+         ;;
+      --no-backup)
+         BACKUP=false
          ;;
          *)
          echo "Unrecognized argument: $1" 1>&2
@@ -386,6 +399,23 @@ if [[ -n "$WILDCARD_DOMAIN" ]]; then
 else
   GATEWAY_ISSUER="$HTTP01_ISSUER"
 fi
+
+# Install the helm CLI, which k3s does not ship, unless it is already here.
+#
+# k3s does have a helm controller built in, but a failure inside the controller
+# is much harder to read than one from the CLI, and its support for charts served
+# from an OCI registry (which kata-deploy's is) varies by k3s version. Both the
+# K8up and Kata installs below use this.
+function install_helm_cli {
+  if command -v helm > /dev/null 2>&1; then
+    return
+  fi
+  echo "Installing the helm CLI"
+  helm_installer_file=$HOME/install-helm.sh
+  curl -sfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 -o "${helm_installer_file}"
+  chmod +x "${helm_installer_file}"
+  "${helm_installer_file}"
+}
 
 function retry {
   local try=0
@@ -804,6 +834,55 @@ fi
 
 echo "Installed cert-manager"
 
+if [[ "$BACKUP" == "true" ]]; then
+
+echo "**************************************************************************************"
+echo "Installing K8up"
+
+# K8up is the backup operator: it watches for Schedule, Backup and Restore
+# resources in a workload's own namespace, and runs restic against the object
+# store named in them. The stack utility emits those resources and nothing else,
+# exactly as it emits Certificates and leaves the issuing to cert-manager -- so
+# this install is the whole of the cluster-side backup arrangement, and a
+# deployment with backup enabled fails on a cluster where it is missing.
+#
+# The CRDs travel with the chart (they used to be a separate apply), so this one
+# command is the whole install.
+install_helm_cli
+
+retry sudo helm repo add k8up-io https://k8up-io.github.io/k8up || die "failed to add the k8up helm repository"
+retry sudo helm repo update k8up-io || die "failed to update the k8up helm repository"
+
+# "upgrade --install" rather than "install" for the same reason as kata-deploy
+# below: retry runs this again after a failure, and a second "install" of a
+# partially-succeeded release fails on the name already being in use rather than
+# on whatever went wrong the first time.
+retry sudo helm upgrade --install k8up k8up-io/k8up \
+  --kubeconfig /etc/rancher/k3s/k3s.yaml \
+  --namespace k8up-system \
+  --create-namespace \
+  || die "failed to install the k8up helm chart"
+
+echo "Waiting for K8up to become available..."
+if ! retry sudo kubectl wait --namespace k8up-system \
+    --for=condition=Available deployment --all --timeout=300s; then
+  sudo kubectl get pods --namespace k8up-system 1>&2
+  die "K8up failed to come up"
+fi
+
+# The operator being up is not the same as the API being able to accept the
+# resources the stack utility will send: a deploy that creates a Schedule before
+# the CRD is established fails on an unknown kind. Established is the condition
+# that says the API server is serving that kind.
+if ! retry sudo kubectl wait --for=condition=Established --timeout=120s \
+    crd/schedules.k8up.io crd/backups.k8up.io crd/restores.k8up.io crd/snapshots.k8up.io; then
+  die "the K8up CRDs were not established"
+fi
+
+echo "Installed K8up"
+
+fi
+
 if [[ "$KATA" == "true" ]]; then
 
 echo "**************************************************************************************"
@@ -816,14 +895,7 @@ echo "Installing Kata Containers"
 # waits for the node to come back Ready. Doing any of that by hand here would be
 # a copy of upstream's work that goes stale.
 #
-# k3s has a helm controller built in, but its support for charts served from an
-# OCI registry (which this one is) varies by k3s version, and a failure inside
-# the controller is much harder to read than one from the CLI.
-echo "Installing the helm CLI"
-helm_installer_file=$HOME/install-helm.sh
-curl -sfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 -o "${helm_installer_file}"
-chmod +x "${helm_installer_file}"
-"${helm_installer_file}"
+install_helm_cli
 
 # As with every other component here, the latest release is installed rather
 # than a pinned version. The chart is published per Kata release under the same
