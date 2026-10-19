@@ -12,6 +12,16 @@
 # is disabled and the nginx ingress controller is installed. See the notes above
 # the --nginx-ingress option below.
 #
+# Secrets are encrypted at rest: k3s is installed with --secrets-encryption, so
+# the API server encrypts Secret objects before they reach the on-disk
+# datastore, and a copy of the datastore alone (a backup, a datastore snapshot
+# shipped somewhere) does not carry every credential in the cluster in the
+# clear. The key lives beside the datastore, in
+# /var/lib/rancher/k3s/server/cred/, so this protects copies of the datastore,
+# not the node itself -- and anything preserving the datastore for disaster
+# recovery must preserve that directory with it, or the Secrets in the restored
+# copy are undecryptable.
+#
 # The latest release of each component is installed rather than a pinned
 # version.
 #
@@ -547,6 +557,10 @@ EOF
 else
   export INSTALL_K3S_EXEC="--disable=traefik${TLS_SAN_ARGS}"
 fi
+
+# Whichever routing arrangement was chosen, Secret objects are encrypted at rest
+# (see the header note, including what this does and does not protect).
+export INSTALL_K3S_EXEC="--secrets-encryption ${INSTALL_K3S_EXEC}"
 
 sudo --preserve-env=INSTALL_K3S_EXEC ${k3s_installer_file}
 echo "Installed k3s"
