@@ -86,6 +86,11 @@ pass "the cluster has a Ready node, reachable at ${TEST_MACHINE_FQDN}:6443"
 assert_kubectl_output "get --raw /version" '"gitVersion".*k3s' \
   "the API server reports a k3s version"
 
+# Asked on the machine rather than inferred from the install arguments: this is
+# k3s's own report that the encryption configuration is actually in effect.
+assert_ssh_output "sudo k3s secrets-encrypt status" "Encryption Status: Enabled" \
+  "Secrets are encrypted at rest"
+
 # --- cert-manager and the ClusterIssuers --------------------------------------
 
 kubectl wait --for=condition=Available deployment --all --namespace cert-manager --timeout=300s > /dev/null \
