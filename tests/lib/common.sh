@@ -79,9 +79,19 @@ require_env () {
 # --- configuration -----------------------------------------------------------
 
 E2E_MACHINE_CMD=${E2E_MACHINE_CMD:-machine}
-E2E_REGION=${E2E_REGION:-nyc3}
+# E2E_REGION and E2E_SIZE are each a space-separated list, in order of
+# preference. The machine utility creates the VM in the first region, with the
+# first size, that the provider has capacity for, so a stockout of one size in
+# one region -- which used to fail the weekly run outright -- just moves the
+# test along to the next. Every size is tried in a region before the next
+# region, and only regions and sizes equally good for the test belong here.
+#
+# These three regions were the cheapest that reliably had capacity. The sizes
+# are the -intel and -amd variants, not the vendor-less basic ones, which
+# DigitalOcean is retiring and which were the ones most often out of stock.
+E2E_REGION=${E2E_REGION:-nyc3 nyc1 tor1}
 E2E_IMAGE=${E2E_IMAGE:-ubuntu-24-04-x64}
-E2E_SIZE=${E2E_SIZE:-s-1vcpu-2gb}
+E2E_SIZE=${E2E_SIZE:-s-1vcpu-2gb-intel s-1vcpu-2gb-amd}
 E2E_NEW_USER=${E2E_NEW_USER:-e2euser}
 
 # How long to allow for the VM to boot and for cloud-init to run the
@@ -172,8 +182,19 @@ e2e_init () {
   banner "e2e test: ${TEST_NAME}"
   echo "machine:          $TEST_MACHINE_FQDN"
   echo "session id:       $TEST_SESSION_ID"
-  echo "region/size:      $E2E_REGION / $E2E_SIZE"
+  echo "regions:          $E2E_REGION"
+  echo "sizes:            $E2E_SIZE"
   echo "provisioning url: $( provisioning_url )"
+}
+
+# Print the words of $2 as the items of a YAML block sequence, each line
+# indented by $1: how E2E_REGION and E2E_SIZE get into the machine config.
+yaml_list () {
+  local indent=$1 item items
+  read -ra items <<< "$2"
+  for item in "${items[@]}"; do
+    echo "${indent}- ${item}"
+  done
 }
 
 random_suffix () {
@@ -249,9 +270,11 @@ digital-ocean:
     access-token: ${E2E_DO_TOKEN}
     ssh-key: ${E2E_SSH_KEY}
     dns-zone: ${E2E_DO_DNS_ZONE}
-    machine-size: ${E2E_SIZE}
+    machine-size:
+$( yaml_list "        " "$E2E_SIZE" )
     image: ${E2E_IMAGE}
-    region: ${E2E_REGION}
+    region:
+$( yaml_list "        " "$E2E_REGION" )
     project: ${E2E_PROJECT}
 machines:
     ${TEST_NAME}-host:
@@ -269,11 +292,15 @@ EOF
   machine_cmd create --name "$TEST_MACHINE_NAME" --type "${TEST_NAME}-host" --wait-for-ip \
     || fail "machine create failed"
 
-  TEST_MACHINE_ID=$( machine_cmd list --name "$TEST_MACHINE_NAME" --output json | jq -r '.[0].id' )
+  local created
+  created=$( machine_cmd list --name "$TEST_MACHINE_NAME" --output json )
+  TEST_MACHINE_ID=$( echo "$created" | jq -r '.[0].id' )
   if [ -z "$TEST_MACHINE_ID" ] || [ "$TEST_MACHINE_ID" == "null" ]; then
     fail "could not determine the id of the created machine"
   fi
-  echo "Machine created with id $TEST_MACHINE_ID"
+  # Which of the regions and sizes it landed on, so a failure that only happens
+  # on one of them can be told apart in the CI log.
+  echo "Machine created with id $TEST_MACHINE_ID: $( echo "$created" | jq -r '"\(.[0].size) in \(.[0].region)"' )"
 }
 
 # Wait until the machine's provisioning status reaches $1 ("UP" or "ERROR"),

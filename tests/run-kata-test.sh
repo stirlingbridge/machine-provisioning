@@ -39,10 +39,15 @@
 # nested virtualization at DigitalOcean is slow, so kata-deploy unpacking its
 # artifacts and restarting k3s takes longer than a normal provisioning run.
 #
+# Intel only, unlike the other tests: nested virtualization on DigitalOcean's
+# AMD sizes is untested, and if it does not work there an AMD fallback would
+# turn a stockout into a provisioning failure instead of avoiding one. The regions are still a list, so there is somewhere to fall
+# forward to.
+#
 # These have to be set *before* common.sh is sourced: it applies the suite-wide
 # defaults at source time, so anything set after it arrives too late to win and
 # is silently ignored.
-E2E_SIZE=${E2E_SIZE:-s-4vcpu-8gb}
+E2E_SIZE=${E2E_SIZE:-s-4vcpu-8gb-intel}
 E2E_PROVISION_TIMEOUT=${E2E_PROVISION_TIMEOUT:-2700}
 
 source "$( dirname -- "${BASH_SOURCE[0]}" )/lib/common.sh"

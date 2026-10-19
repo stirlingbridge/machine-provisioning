@@ -25,7 +25,7 @@
 # This test's own defaults, which have to be set *before* common.sh is sourced:
 # it applies the suite-wide defaults at source time, so anything set after it
 # arrives too late to win and is silently ignored.
-E2E_SIZE=${E2E_SIZE:-s-1vcpu-1gb}
+E2E_SIZE=${E2E_SIZE:-s-1vcpu-1gb-intel s-1vcpu-1gb-amd}
 # A failure is meant to be reported quickly; if it takes longer than this
 # something is wrong with the reporting, which is the thing under test.
 E2E_PROVISION_TIMEOUT=${E2E_PROVISION_TIMEOUT:-600}

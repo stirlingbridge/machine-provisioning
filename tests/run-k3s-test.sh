@@ -36,7 +36,7 @@
 # This has to be set *before* common.sh is sourced: it applies the suite-wide
 # defaults at source time, so anything set after it arrives too late to win and
 # is silently ignored.
-E2E_SIZE=${E2E_SIZE:-s-2vcpu-4gb}
+E2E_SIZE=${E2E_SIZE:-s-2vcpu-4gb-intel s-2vcpu-4gb-amd}
 
 source "$( dirname -- "${BASH_SOURCE[0]}" )/lib/common.sh"
 
