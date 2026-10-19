@@ -15,8 +15,9 @@ name: E2E Test
 # provide.
 #
 # The kata job is the slow and expensive one: it provisions a larger VM and runs
-# pods inside nested VMs on it. Each test script picks its own machine size, so
-# there is nothing to configure for that here.
+# pods inside nested VMs on it. Each test script picks its own machine sizes, and
+# tests/lib/common.sh the regions, each a list to fall forward through when
+# DigitalOcean is out of stock, so there is nothing to configure for that here.
 
 on:
   workflow_dispatch:

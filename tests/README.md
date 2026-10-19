@@ -79,9 +79,9 @@ into the machine they made.
 
 | Variable | Default | Description |
 |---|---|---|
-| `E2E_REGION` | `nyc3` | DigitalOcean region |
+| `E2E_REGION` | `nyc3 nyc1 tor1` | DigitalOcean regions to try, in order |
 | `E2E_IMAGE` | `ubuntu-24-04-x64` | Machine image |
-| `E2E_SIZE` | `s-1vcpu-2gb` (`s-2vcpu-4gb` for k3s, `s-4vcpu-8gb` for kata) | Machine size |
+| `E2E_SIZE` | `s-1vcpu-2gb-intel s-1vcpu-2gb-amd` (see below) | Machine sizes to try, in order |
 | `E2E_NEW_USER` | `e2euser` | User the provisioning scripts run as |
 | `E2E_PROVISION_TIMEOUT` | `1800` (`2700` for kata) | Seconds to allow for cloud-init |
 | `E2E_PROVISIONING_URL` | this commit's `combine.sh` | Which scripts to test |
@@ -90,6 +90,23 @@ into the machine they made.
 | `E2E_SESSION_ID` | random | Session id tagged onto the VMs |
 | `E2E_KEEP_MACHINE` | unset | Set to leave the VM running for debugging |
 | `E2E_DEBUG` | unset | Set for `set -x` |
+
+`E2E_REGION` and `E2E_SIZE` are space-separated lists. The machine utility
+creates the VM in the first region, with the first size, that DigitalOcean has
+capacity for -- asking its inventory API first and moving on if a create fails
+for lack of capacity anyway -- so one size being out of stock in one region no
+longer fails the run. Every size is tried in a region before the next region.
+The region and size the VM landed on are printed when it is created.
+
+Each test defaults to the smallest sizes it works on, in DigitalOcean's `-intel`
+and `-amd` variants rather than the vendor-less basic sizes being retired:
+
+| Test | Default `E2E_SIZE` |
+|---|---|
+| combine | `s-1vcpu-2gb-intel s-1vcpu-2gb-amd` |
+| error | `s-1vcpu-1gb-intel s-1vcpu-1gb-amd` |
+| k3s | `s-2vcpu-4gb-intel s-2vcpu-4gb-amd` |
+| kata | `s-4vcpu-8gb-intel` only: nested virtualization is untested on the AMD sizes |
 
 ## Running
 
