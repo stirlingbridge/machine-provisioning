@@ -45,7 +45,7 @@ jobs:
       matrix:
         # One VM per job, run in parallel: a failure in one test should not
         # hide the result of the others.
-        test: [combine, error, k3s, kata]
+        test: [combine, error, harden, k3s, kata]
     steps:
       - name: "Clone project repository"
         uses: actions/checkout@v5

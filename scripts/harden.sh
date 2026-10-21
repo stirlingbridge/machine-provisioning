@@ -1,0 +1,380 @@
+#!/usr/bin/env bash
+#
+# harden.sh -- lock down an Ubuntu machine that is administered only over ssh
+# from known addresses.
+#
+# Installs an nftables firewall that drops all inbound traffic except ssh from
+# the given addresses, moves sshd to the given port with public key logins
+# only, locks the root password, applies kernel hardening settings, and enables
+# unattended upgrades with automatic reboots. The firewall is a table of its
+# own (inet harden), so rules that docker installs are left alone. Ubuntu only.
+#
+# Usage:
+#   harden.sh --ssh-allow-from <cidr>[,<cidr>...] [--ssh-port <port>]
+#             [--ssh-users <user>[,<user>...]] [--reboot-time <HH:MM>]
+#             [--upgrade-origin <pattern>]... [--pro-token <token>]
+#             [--remove-droplet-agent] [--keep-snapd]
+#
+#   --ssh-allow-from        Addresses or CIDRs, IPv4 or IPv6, allowed to ssh
+#                           in. Required. Leave out your own and you are
+#                           locked out: only the provider's console gets in.
+#   --ssh-port              Port sshd listens on (default 22).
+#   --ssh-users             Users allowed to log in (default: the user running
+#                           this script).
+#   --reboot-time           When unattended-upgrades reboots after an upgrade
+#                           that needs it (default 04:00).
+#   --upgrade-origin        An extra Unattended-Upgrade::Origins-Pattern entry,
+#                           e.g. origin=Docker. Repeat for each.
+#   --pro-token             Attach Ubuntu Pro and enable Livepatch.
+#   --remove-droplet-agent  Remove DigitalOcean's droplet-agent (the web
+#                           console; the recovery console still works).
+#   --keep-snapd            Don't remove snapd.
+#
+# Run it last: it blocks everything that earlier scripts listen on except ssh,
+# including health.sh's status endpoint, so "machine status" can no longer
+# reach the machine afterwards. The arguments end up in the machine's user
+# data, which the provider's metadata service serves to anything on the
+# machine (this script blocks containers from reaching it).
+#
+if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
+    set -x
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+
+APT_INSTALL="sudo --preserve-env=DEBIAN_FRONTEND,NEEDRESTART_MODE apt -y install"
+APT_PURGE="sudo --preserve-env=DEBIAN_FRONTEND,NEEDRESTART_MODE apt -y purge"
+
+set -eo pipefail  ## https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail/
+
+echo "***********************************************************************"
+echo "* harden.sh"
+echo "***********************************************************************"
+echo "$0 called with $*"
+
+# Defaults
+SSH_PORT=22
+SSH_ALLOW_FROM=""
+SSH_USERS="${USER}"
+REBOOT_TIME="04:00"
+UPGRADE_ORIGINS=()
+PRO_TOKEN=""
+REMOVE_DROPLET_AGENT=false
+KEEP_SNAPD=false
+
+while (( "$#" )); do
+   case $1 in
+      --ssh-port)
+         shift&&SSH_PORT="$1"||{ echo "Missing --ssh-port value"; exit 1; }
+         ;;
+      --ssh-allow-from)
+         shift&&SSH_ALLOW_FROM="$1"||{ echo "Missing --ssh-allow-from value"; exit 1; }
+         ;;
+      --ssh-users)
+         shift&&SSH_USERS="$1"||{ echo "Missing --ssh-users value"; exit 1; }
+         ;;
+      --reboot-time)
+         shift&&REBOOT_TIME="$1"||{ echo "Missing --reboot-time value"; exit 1; }
+         ;;
+      --upgrade-origin)
+         shift&&UPGRADE_ORIGINS+=("$1")||{ echo "Missing --upgrade-origin value"; exit 1; }
+         ;;
+      --pro-token)
+         shift&&PRO_TOKEN="$1"||{ echo "Missing --pro-token value"; exit 1; }
+         ;;
+      --remove-droplet-agent)
+         REMOVE_DROPLET_AGENT=true
+         ;;
+      --keep-snapd)
+         KEEP_SNAPD=true
+         ;;
+      *)
+         echo "Unrecognized argument: $1"
+         ;;
+   esac
+   shift
+done
+
+# Validate arguments
+if [[ -z "$SSH_ALLOW_FROM" ]]; then
+    echo "Error: --ssh-allow-from is required (comma-separated list of addresses/CIDRs permitted to ssh in)"
+    exit 1
+fi
+if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || (( SSH_PORT < 1 || SSH_PORT > 65535 )); then
+    echo "Error: invalid --ssh-port: $SSH_PORT"
+    exit 1
+fi
+if ! [[ "$REBOOT_TIME" =~ ^[0-2][0-9]:[0-5][0-9]$ ]]; then
+    echo "Error: invalid --reboot-time (expected HH:MM): $REBOOT_TIME"
+    exit 1
+fi
+
+# Split the ssh allow list into IPv4 and IPv6 sets
+SSH_ALLOW_V4=()
+SSH_ALLOW_V6=()
+IFS=',' read -ra ALLOW_ENTRIES <<< "$SSH_ALLOW_FROM"
+for entry in "${ALLOW_ENTRIES[@]}"; do
+    if [[ "$entry" == *:* ]]; then
+        SSH_ALLOW_V6+=("$entry")
+    else
+        SSH_ALLOW_V4+=("$entry")
+    fi
+done
+
+echo "***********************************************************************"
+echo "* Installing packages"
+echo "***********************************************************************"
+
+sudo apt update
+$APT_INSTALL nftables unattended-upgrades needrestart
+
+echo "***********************************************************************"
+echo "* Removing unneeded packages"
+echo "***********************************************************************"
+
+if [[ "$KEEP_SNAPD" != "true" ]] && dpkg -s snapd >/dev/null 2>&1; then
+    $APT_PURGE snapd
+fi
+# droplet-agent provides the DigitalOcean web console. The recovery console still works without it.
+if [[ "$REMOVE_DROPLET_AGENT" == "true" ]] && dpkg -s droplet-agent >/dev/null 2>&1; then
+    $APT_PURGE droplet-agent
+fi
+sudo apt -y autoremove
+
+echo "***********************************************************************"
+echo "* Configuring firewall"
+echo "***********************************************************************"
+
+# We manage our own nftables table rather than the whole ruleset so that rules
+# installed by docker (or anything else) are left alone.
+if which ufw >/dev/null 2>&1; then
+    sudo ufw --force disable
+fi
+
+set_elements() {
+    local IFS=','
+    if (( $# > 0 )); then
+        echo "elements = { $* }"
+    fi
+}
+
+cat >/tmp/harden.nft.$$ <<EOF
+#!/usr/sbin/nft -f
+# Managed by machine-provisioning harden.sh -- changes will be overwritten
+
+table inet harden
+delete table inet harden
+
+table inet harden {
+    set ssh_allow_v4 {
+        type ipv4_addr
+        flags interval
+        $(set_elements "${SSH_ALLOW_V4[@]}")
+    }
+
+    set ssh_allow_v6 {
+        type ipv6_addr
+        flags interval
+        $(set_elements "${SSH_ALLOW_V6[@]}")
+    }
+
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+        iif lo accept
+
+        icmp type echo-request limit rate 5/second accept
+        meta l4proto ipv6-icmp accept
+
+        tcp dport ${SSH_PORT} ip saddr @ssh_allow_v4 ct state new accept
+        tcp dport ${SSH_PORT} ip6 saddr @ssh_allow_v6 ct state new accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+
+        # Containers have no business talking to the cloud metadata service (it serves user-data).
+        ip daddr 169.254.169.254 drop
+    }
+}
+EOF
+
+sudo nft -c -f /tmp/harden.nft.$$
+sudo install -m 644 -o root -g root /tmp/harden.nft.$$ /etc/nftables.conf
+rm -f /tmp/harden.nft.$$
+
+# The stock unit flushes the entire ruleset on stop, which would also wipe docker's rules.
+sudo mkdir -p /etc/systemd/system/nftables.service.d
+sudo tee /etc/systemd/system/nftables.service.d/harden.conf > /dev/null <<EOF
+[Service]
+ExecStop=
+ExecStop=-/usr/sbin/nft delete table inet harden
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable nftables
+sudo nft -f /etc/nftables.conf
+
+echo "***********************************************************************"
+echo "* Configuring sshd"
+echo "***********************************************************************"
+
+# sshd uses the first value it sees for most options, and the Include of
+# sshd_config.d is at the top of sshd_config, so 00- wins. Port and
+# ListenAddress are the exceptions: sshd listens on every one it finds, so any
+# others would keep it listening where they say too.
+for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+    if [[ -f "$f" && "$f" != */00-harden.conf ]]; then
+        sudo sed -i -E 's/^[[:space:]]*(Port|ListenAddress)[[:space:]]/# Disabled by harden.sh: &/I' "$f"
+    fi
+done
+sudo tee /etc/ssh/sshd_config.d/00-harden.conf > /dev/null <<EOF
+# Managed by machine-provisioning harden.sh -- changes will be overwritten
+Port ${SSH_PORT}
+AllowUsers ${SSH_USERS//,/ }
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+MaxAuthTries 3
+LoginGraceTime 20
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+PermitTunnel no
+PermitUserEnvironment no
+ClientAliveInterval 300
+ClientAliveCountMax 2
+EOF
+
+sudo mkdir -p /run/sshd
+sudo sshd -t
+# Checked before sshd is restarted onto it, while the current session still works
+if sudo sshd -T | awk '$1 == "listenaddress"' | grep -v ":${SSH_PORT}\$"; then
+    echo "Error: sshd would also listen on the addresses above, not just port ${SSH_PORT}"
+    exit 1
+fi
+
+# Ubuntu 24.04 socket-activates sshd. Switch to the plain service so the Port
+# setting above is all that determines what sshd listens on.
+if systemctl is-enabled ssh.socket >/dev/null 2>&1; then
+    sudo systemctl disable --now ssh.socket
+fi
+sudo systemctl enable ssh.service
+sudo systemctl restart ssh.service
+
+# ssh.service has KillMode=process, so systemd stops only the sshd it tracks as
+# the main process. The socket-activated sshd from boot can be another one, and
+# then survives in the service's control group still listening on port 22
+# (systemd logs "Found left-over process"). Stop any listener there but the
+# new one. Logged-in sessions run in their own scopes, so they aren't affected.
+main_pid=$(systemctl show -p MainPID --value ssh.service)
+cgroup=$(systemctl show -p ControlGroup --value ssh.service)
+for pid in $(cat "/sys/fs/cgroup${cgroup}/cgroup.procs"); do
+    if [[ "$pid" != "$main_pid" ]] && tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | grep -q '\[listener\]'; then
+        echo "Stopping left-over sshd listener ${pid}"
+        sudo kill "$pid"
+    fi
+done
+
+# What sshd actually listens on, which the configuration alone doesn't decide
+other_listeners=""
+for _ in {1..10}; do
+    other_listeners=$(sudo ss -Htlnp | awk -v port=":${SSH_PORT}" '/"sshd"/ && substr($4, length($4) - length(port) + 1) != port')
+    [[ -z "$other_listeners" ]] && break
+    sleep 1
+done
+if [[ -n "$other_listeners" ]]; then
+    echo "Error: sshd is listening on more than port ${SSH_PORT}:"
+    echo "$other_listeners"
+    exit 1
+fi
+
+sudo passwd -l root
+
+echo "***********************************************************************"
+echo "* Configuring kernel parameters"
+echo "***********************************************************************"
+
+sudo tee /etc/sysctl.d/90-harden.conf > /dev/null <<EOF
+# Managed by machine-provisioning harden.sh -- changes will be overwritten
+kernel.kptr_restrict = 2
+kernel.dmesg_restrict = 1
+kernel.unprivileged_bpf_disabled = 1
+net.core.bpf_jit_harden = 2
+kernel.yama.ptrace_scope = 2
+kernel.kexec_load_disabled = 1
+kernel.sysrq = 0
+fs.suid_dumpable = 0
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.tcp_syncookies = 1
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv6.conf.default.accept_source_route = 0
+EOF
+sudo sysctl --system > /dev/null
+
+echo "***********************************************************************"
+echo "* Configuring automatic updates"
+echo "***********************************************************************"
+
+sudo tee /etc/apt/apt.conf.d/20auto-upgrades > /dev/null <<EOF
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Download-Upgradeable-Packages "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+
+{
+    echo "// Managed by machine-provisioning harden.sh -- changes will be overwritten"
+    if (( ${#UPGRADE_ORIGINS[@]} > 0 )); then
+        echo "Unattended-Upgrade::Origins-Pattern {"
+        for origin in "${UPGRADE_ORIGINS[@]}"; do
+            echo "    \"${origin}\";"
+        done
+        echo "};"
+    fi
+    echo "Unattended-Upgrade::Automatic-Reboot \"true\";"
+    echo "Unattended-Upgrade::Automatic-Reboot-WithUsers \"true\";"
+    echo "Unattended-Upgrade::Automatic-Reboot-Time \"${REBOOT_TIME}\";"
+    echo "Unattended-Upgrade::Remove-Unused-Kernel-Packages \"true\";"
+    echo "Unattended-Upgrade::Remove-Unused-Dependencies \"true\";"
+} | sudo tee /etc/apt/apt.conf.d/52unattended-upgrades-harden > /dev/null
+
+# Restart services using upgraded libraries without prompting
+sudo mkdir -p /etc/needrestart/conf.d
+echo "\$nrconf{restart} = 'a';" | sudo tee /etc/needrestart/conf.d/harden.conf > /dev/null
+
+# Fails if the files written above don't parse. (Not unattended-upgrade --dry-run, which
+# needs the lock that the boot-time unattended-upgrades run on a new machine may hold.)
+apt-config dump > /dev/null
+
+if [[ -n "$PRO_TOKEN" ]]; then
+    echo "***********************************************************************"
+    echo "* Attaching Ubuntu Pro and enabling Livepatch"
+    echo "***********************************************************************"
+    if ! sudo pro status --format json | grep -q '"attached": true'; then
+        sudo pro attach "$PRO_TOKEN"
+    fi
+    sudo pro enable livepatch --assume-yes || echo "Warning: unable to enable livepatch (it may already be enabled)"
+fi
+
+echo "***********************************************************************"
+echo "* Hardening summary"
+echo "***********************************************************************"
+sudo sshd -T | grep -E '^(port|allowusers|permitrootlogin|passwordauthentication) '
+sudo nft list table inet harden

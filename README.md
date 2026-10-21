@@ -14,6 +14,19 @@ _An unedited recording: from nothing, to a machine running k3s, to a running app
 Supports the execution of several other scripts together (useful because machine provisioning only allows one script to be executed).
 ### docker.sh
 Installs Docker and performs associated system configuration.
+### harden.sh
+Locks down a host that should accept nothing but ssh from a known set of addresses. Run it last, after any other scripts: it blocks whatever they listen on, including `health.sh`'s status endpoint, so `machine status` can't reach the machine afterwards. It:
+* Installs an nftables `inet harden` table that drops all inbound traffic except ssh from `--ssh-allow-from`. The table stands alone, so docker's rules are left in place.
+* Blocks containers from reaching the cloud metadata service, which serves the machine's user-data (including these script arguments).
+* Restricts sshd to public keys, `--ssh-users` (default: the provisioning user) and `--ssh-port`, with no root login and no forwarding. It also switches Ubuntu 24.04 from socket-activated sshd to the plain service.
+* Applies kernel sysctl hardening.
+* Enables unattended upgrades with an automatic reboot at `--reboot-time` (default `04:00`) when one is required. Extra repositories can be added with `--upgrade-origin` (e.g. `origin=Docker`).
+* Optionally attaches Ubuntu Pro and enables Livepatch (`--pro-token`). Note that the token is then visible in the machine's user-data.
+* Purges snapd (`--keep-snapd` to skip) and optionally the DigitalOcean web console agent (`--remove-droplet-agent`).
+
+`--ssh-allow-from` is required and takes a comma-separated list of IPv4/IPv6 addresses or CIDRs. If it's wrong you will be locked out and need the provider's recovery console.
+
+This script only controls inbound traffic. Restrict outbound traffic with the provider's cloud firewall (e.g. a DigitalOcean Cloud Firewall), which also covers container traffic.
 ### error.sh
 Always fails. A test script for checking that provisioning failures are detected and reported correctly.
 ### fqdn.sh

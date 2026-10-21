@@ -112,6 +112,10 @@ TEST_MACHINE_FQDN=""
 TEST_MACHINE_ID=""
 TEST_SESSION_ID=""
 
+# The port the machine's sshd listens on. A test of a script that moves sshd
+# (harden.sh) sets this once it has.
+TEST_SSH_PORT=22
+
 # Optionally the name of a function called during teardown of a failing test,
 # for a test that can report more than the cloud-init log (the k3s test dumps
 # the state of the cluster). The machine is destroyed immediately afterwards,
@@ -339,12 +343,20 @@ wait_for_provisioning () {
 # --- ssh ---------------------------------------------------------------------
 
 ssh_machine () {
+  ssh_machine_as "$E2E_NEW_USER" "$@"
+}
+
+# ssh to the machine as the user $1, for asserting who may *not* log in.
+ssh_machine_as () {
+  local user=$1
+  shift
   ssh -i "$E2E_SSH_KEY_FILE" \
+      -p "$TEST_SSH_PORT" \
       -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile="$TEST_WORK_DIR/known_hosts" \
       -o BatchMode=yes \
       -o ConnectTimeout=15 \
-      "${E2E_NEW_USER}@${TEST_MACHINE_FQDN}" "$@"
+      "${user}@${TEST_MACHINE_FQDN}" "$@"
 }
 
 # Wait until the machine accepts SSH. The DNS record was only just created and
