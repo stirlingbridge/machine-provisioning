@@ -268,6 +268,33 @@ fi
 sudo systemctl enable ssh.service
 sudo systemctl restart ssh.service
 
+# ssh.service has KillMode=process, so systemd stops only the sshd it tracks as
+# the main process. The socket-activated sshd from boot can be another one, and
+# then survives in the service's control group still listening on port 22
+# (systemd logs "Found left-over process"). Stop any listener there but the
+# new one. Logged-in sessions run in their own scopes, so they aren't affected.
+main_pid=$(systemctl show -p MainPID --value ssh.service)
+cgroup=$(systemctl show -p ControlGroup --value ssh.service)
+for pid in $(cat "/sys/fs/cgroup${cgroup}/cgroup.procs"); do
+    if [[ "$pid" != "$main_pid" ]] && tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | grep -q '\[listener\]'; then
+        echo "Stopping left-over sshd listener ${pid}"
+        sudo kill "$pid"
+    fi
+done
+
+# What sshd actually listens on, which the configuration alone doesn't decide
+other_listeners=""
+for _ in {1..10}; do
+    other_listeners=$(sudo ss -Htlnp | awk -v port=":${SSH_PORT}" '/"sshd"/ && substr($4, length($4) - length(port) + 1) != port')
+    [[ -z "$other_listeners" ]] && break
+    sleep 1
+done
+if [[ -n "$other_listeners" ]]; then
+    echo "Error: sshd is listening on more than port ${SSH_PORT}:"
+    echo "$other_listeners"
+    exit 1
+fi
+
 sudo passwd -l root
 
 echo "***********************************************************************"
