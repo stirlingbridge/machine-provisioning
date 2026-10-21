@@ -222,7 +222,14 @@ echo "* Configuring sshd"
 echo "***********************************************************************"
 
 # sshd uses the first value it sees for most options, and the Include of
-# sshd_config.d is at the top of sshd_config, so 00- wins.
+# sshd_config.d is at the top of sshd_config, so 00- wins. Port and
+# ListenAddress are the exceptions: sshd listens on every one it finds, so any
+# others would keep it listening where they say too.
+for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+    if [[ -f "$f" && "$f" != */00-harden.conf ]]; then
+        sudo sed -i -E 's/^[[:space:]]*(Port|ListenAddress)[[:space:]]/# Disabled by harden.sh: &/I' "$f"
+    fi
+done
 sudo tee /etc/ssh/sshd_config.d/00-harden.conf > /dev/null <<EOF
 # Managed by machine-provisioning harden.sh -- changes will be overwritten
 Port ${SSH_PORT}
@@ -247,6 +254,11 @@ EOF
 
 sudo mkdir -p /run/sshd
 sudo sshd -t
+# Checked before sshd is restarted onto it, while the current session still works
+if sudo sshd -T | awk '$1 == "listenaddress"' | grep -v ":${SSH_PORT}\$"; then
+    echo "Error: sshd would also listen on the addresses above, not just port ${SSH_PORT}"
+    exit 1
+fi
 
 # Ubuntu 24.04 socket-activates sshd. Switch to the plain service so the Port
 # setting above is all that determines what sshd listens on.
@@ -320,7 +332,9 @@ EOF
 sudo mkdir -p /etc/needrestart/conf.d
 echo "\$nrconf{restart} = 'a';" | sudo tee /etc/needrestart/conf.d/harden.conf > /dev/null
 
-sudo unattended-upgrade --dry-run > /dev/null
+# Fails if the files written above don't parse. (Not unattended-upgrade --dry-run, which
+# needs the lock that the boot-time unattended-upgrades run on a new machine may hold.)
+apt-config dump > /dev/null
 
 if [[ -n "$PRO_TOKEN" ]]; then
     echo "***********************************************************************"

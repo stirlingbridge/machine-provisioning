@@ -127,13 +127,28 @@ assert_ssh_output "sudo nft list set inet harden ssh_allow_v6" "${OTHER_ALLOWED_
 
 # --- sshd -----------------------------------------------------------------------
 
-assert_ssh_output "sudo sshd -T" "^port ${HARDENED_SSH_PORT}\$" "sshd is configured for port $HARDENED_SSH_PORT"
+# Every port sshd is configured with, on one line, so another one can't hide
+# beside the right one.
+assert_ssh_output "sudo sshd -T | grep '^port ' | paste -sd ," "^port ${HARDENED_SSH_PORT}\$" \
+  "sshd is configured for port $HARDENED_SSH_PORT and no other"
 assert_ssh_output "sudo sshd -T" "^permitrootlogin no\$" "sshd does not permit root logins"
 assert_ssh_output "sudo sshd -T" "^passwordauthentication no\$" "sshd does not permit password logins"
 assert_ssh_output "sudo sshd -T" "^allowusers ${E2E_NEW_USER}\$" "sshd allows only ${E2E_NEW_USER}"
 
+# Fails showing what is listening, if anything.
+assert_nothing_listens_on_22 () {
+  local out
+  out=$( ssh_machine "sudo ss -Htlnp 'sport = :22'" 2>&1 ) || fail "$1 - could not run ss on the machine: $out"
+  if [ -n "$out" ]; then
+    echo "listening on port 22:"
+    echo "$out"
+    fail "$1"
+  fi
+  pass "$1"
+}
+
 # sshd -T is the configuration; these are what it actually does.
-assert_ssh_succeeds "! sudo ss -Htln 'sport = :22' | grep -q ." "nothing listens on port 22"
+assert_nothing_listens_on_22 "nothing listens on port 22"
 assert_ssh_output "systemctl is-enabled ssh.socket" "disabled" "socket-activated sshd is disabled"
 assert_ssh_output "systemctl is-enabled ssh.service" "^enabled" "ssh.service is enabled"
 
@@ -217,6 +232,6 @@ wait_for_ssh
 assert_port_blocked 22 "port 22 does not answer after a reboot"
 assert_ssh_output "sudo nft list set inet harden ssh_allow_v4" "${runner_ip}" \
   "the firewall is loaded after a reboot"
-assert_ssh_succeeds "! sudo ss -Htln 'sport = :22' | grep -q ." "nothing listens on port 22 after a reboot"
+assert_nothing_listens_on_22 "nothing listens on port 22 after a reboot"
 check_container_network "a container can reach the internet after a reboot"
 check_metadata_blocked "a container cannot reach the metadata service after a reboot"
