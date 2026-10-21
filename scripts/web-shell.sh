@@ -1,4 +1,26 @@
 #!/usr/bin/env bash
+#
+# web-shell.sh -- install browser-based remote shell access.
+#
+# Installs ttyd (the terminal server), Caddy as a TLS-terminating reverse proxy
+# using Let's Encrypt, and a small local JWT verification service that Caddy
+# consults via forward_auth. Callers authenticate with a JWT signed by the
+# private key matching the public key supplied here, which supports both
+# interactive terminal sessions and programmatic command execution from browser
+# JavaScript. See examples/web-shell/ for a worked example.
+#
+# Usage:
+#   web-shell.sh --fqdn <hostname> --jwt-public-key-file <path>
+#                [--shell-user <user>] [-f]
+#
+#   --fqdn                  Public hostname of this machine, used for the
+#                           Let's Encrypt certificate. Required.
+#   --jwt-public-key-file   PEM-encoded public key used to verify JWTs.
+#                           Required.
+#   --shell-user            Unix account the shell runs as, created if it does
+#                           not exist (default "webshell").
+#   -f                      Reinstall even if ttyd is already present.
+#
 if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi

@@ -1,11 +1,49 @@
 #!/usr/bin/env bash
+#
+# combine.sh -- run several provisioning scripts in sequence.
+#
+# Useful because most machine provisioning mechanisms only allow a single
+# script to be executed after first boot.
+#
+# Usage (positional form):
+#   combine.sh "<script> [args...]" ["<script> [args...]" ...]
+#
+#   Each argument names one script to run, optionally followed by its
+#   arguments, all in a single shell word. Arguments containing spaces may be
+#   quoted within the entry, e.g.:
+#     combine.sh "packages.sh build-essential" podman.sh \
+#                "k3s-node.sh -y --letsencrypt-email user@example.com"
+#
+# Usage (legacy flag form, selected when the first argument starts with --):
+#   combine.sh --script-url <script> [--script-args "<args>"] [--script-url ... ]
+#
+#   --script-url   Script to run. Repeat for each script to run.
+#   --script-args  Arguments for the immediately preceding --script-url.
+#
+# In both forms a script is either an absolute local path, a full URL, or a
+# bare file name resolved relative to the directory part of
+# $MACHINE_SCRIPT_URL (falling back to this repo's scripts directory on
+# GitHub).
+#
+# Scripts run in the order given, and execution stops at the first failure.
+# Exits with the exit status of the last script run.
+#
 if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi
 
-DEFAULT_SCRIPT_URL_PREFIX="$(dirname ${MACHINE_SCRIPT_URL})"
-if [[ -z "$DEFAULT_SCRIPT_URL_PREFIX" ]]; then
-  DEFAULT_SCRIPT_URL_PREFIX="https://raw.githubusercontent.com/bozemanpass/machine-provisioning/refs/heads/main/scripts"
+# Where a bare script name is resolved from: the directory part of the URL this
+# script was itself fetched from, so that a machine provisioned from a branch
+# runs that branch's scripts throughout. $MACHINE_SCRIPT_URL is set by the
+# provisioning tool; falling back to main covers running this script by hand.
+#
+# Test the variable rather than the result of dirname: with the variable empty
+# dirname yields "." if its argument is quoted and an error if it is not, and
+# neither is a directory to resolve scripts from.
+if [[ -z "$MACHINE_SCRIPT_URL" ]]; then
+  DEFAULT_SCRIPT_URL_PREFIX="https://raw.githubusercontent.com/stirlingbridge/machine-provisioning/refs/heads/main/scripts"
+else
+  DEFAULT_SCRIPT_URL_PREFIX="$(dirname "$MACHINE_SCRIPT_URL")"
 fi
 
 export DEBIAN_FRONTEND=noninteractive
@@ -18,20 +56,31 @@ set -eo pipefail  ## https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_
 SCRIPTS=()
 declare -A ARGS
 
-while (( "$#" )); do
-   case $1 in
-      --script-url)
-         shift&&SCRIPTS+=("$1")||die
-         ;;
-      --script-args)
-        shift&&ARGS[$(( ${#SCRIPTS[@]} ))]="$1"||die
-         ;;
-         *)
-         echo "Unrecognized argument: $1"
-         ;;
-   esac
-   shift
-done
+if [[ "$1" == --* ]]; then
+  # Legacy flag form
+  while (( "$#" )); do
+     case $1 in
+        --script-url)
+           shift&&SCRIPTS+=("$1")||die
+           ;;
+        --script-args)
+          shift&&ARGS[$(( ${#SCRIPTS[@]} ))]="$1"||die
+           ;;
+           *)
+           echo "Unrecognized argument: $1"
+           ;;
+     esac
+     shift
+  done
+else
+  # Positional form: each argument is "<script> [args...]" in one word
+  for entry in "$@"; do
+    [[ -z "${entry// }" ]] && continue
+    script="${entry%%[[:space:]]*}"
+    SCRIPTS+=("$script")
+    ARGS[${#SCRIPTS[@]}]="${entry#"$script"}"
+  done
+fi
 
 function maybe_install {
   local todo=""
@@ -76,8 +125,10 @@ for script in "${SCRIPTS[@]}"; do
     cmd=/tmp/combine.step.$step
   fi
 
-  echo "Running: $cmd ${ARGS["$step"]}"
-  $cmd ${ARGS["$step"]} && rc=$? || rc=$?
+  # Split the argument string into words, honoring any quoting inside it
+  eval "set -- ${ARGS["$step"]}"
+  echo "Running: $cmd $*"
+  "$cmd" "$@" && rc=$? || rc=$?
   if [[ $rc -ne 0 ]]; then
     echo "$script FAILED rc=$rc"
   fi

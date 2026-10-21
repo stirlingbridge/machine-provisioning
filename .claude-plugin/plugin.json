@@ -1,0 +1,12 @@
+{
+  "name": "machine-provisioning",
+  "displayName": "Machine Provisioning",
+  "description": "Compose provisioning scripts that turn a fresh VM into a Docker host or a single-node k8s cluster ready for stack deployments",
+  "author": {
+    "name": "Bozeman Pass, Inc.",
+    "url": "https://github.com/bozemanpass"
+  },
+  "homepage": "https://github.com/stirlingbridge/machine-provisioning",
+  "repository": "https://github.com/stirlingbridge/machine-provisioning",
+  "keywords": ["cloud-init", "provisioning", "k3s", "kubernetes", "docker"]
+}
