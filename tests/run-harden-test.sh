@@ -142,6 +142,9 @@ assert_nothing_listens_on_22 () {
   if [ -n "$out" ]; then
     echo "listening on port 22:"
     echo "$out"
+    echo "----- sshd processes and units -----"
+    ssh_machine "uptime; ps -o pid,ppid,lstart,unit,args -C sshd; systemctl status ssh.socket ssh.service --no-pager; sudo journalctl -b -u ssh.socket -u ssh.service --no-pager | tail -60" 2>&1 || true
+    echo "------------------------------------"
     fail "$1"
   fi
   pass "$1"
