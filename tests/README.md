@@ -22,11 +22,14 @@ provider support, which the machine repository's e2e suite already covers.
 | `run-error-test.sh` | 1 VM, ~5 min | `error.sh`, and `combine.sh` stopping at the first failure |
 | `run-k3s-test.sh` | 1 VM, ~20 min | `k3s-node.sh` (Gateway API by default, nginx ingress with `E2E_K3S_MODE=ingress`) |
 | `run-kata-test.sh` | 1 larger VM, ~35 min | `k3s-node.sh --kata`, including that a pod on the `kata` RuntimeClass really runs in a VM |
+| `run-harden-test.sh` | 1 VM, ~15 min | `harden.sh` and `docker.sh`, from outside the machine and again after a reboot |
 
-`docker.sh` and `web-shell.sh` are not yet covered. `docker.sh` is an
-alternative to `podman.sh` and needs a machine of its own (installing both on
-one machine is explicitly unsupported); `web-shell.sh` needs a browser-side
-JWT to exercise properly.
+`web-shell.sh` is not yet covered: it needs a browser-side JWT to exercise
+properly.
+
+The harden test allows ssh only from the address it runs from, which it looks
+up at api.ipify.org, so it has to run from a host whose public IPv4 address
+stays the same for the length of the test. A GitHub runner's does.
 
 ## Which scripts get tested
 
@@ -107,6 +110,7 @@ and `-amd` variants rather than the vendor-less basic sizes being retired:
 | error | `s-1vcpu-1gb-intel s-1vcpu-1gb-amd` |
 | k3s | `s-2vcpu-4gb-intel s-2vcpu-4gb-amd` |
 | kata | `s-4vcpu-8gb-intel` only: nested virtualization is untested on the AMD sizes |
+| harden | `s-1vcpu-2gb-intel s-1vcpu-2gb-amd` |
 
 ## Running
 

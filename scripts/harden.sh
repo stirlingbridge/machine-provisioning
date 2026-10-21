@@ -1,4 +1,41 @@
 #!/usr/bin/env bash
+#
+# harden.sh -- lock down an Ubuntu machine that is administered only over ssh
+# from known addresses.
+#
+# Installs an nftables firewall that drops all inbound traffic except ssh from
+# the given addresses, moves sshd to the given port with public key logins
+# only, locks the root password, applies kernel hardening settings, and enables
+# unattended upgrades with automatic reboots. The firewall is a table of its
+# own (inet harden), so rules that docker installs are left alone. Ubuntu only.
+#
+# Usage:
+#   harden.sh --ssh-allow-from <cidr>[,<cidr>...] [--ssh-port <port>]
+#             [--ssh-users <user>[,<user>...]] [--reboot-time <HH:MM>]
+#             [--upgrade-origin <pattern>]... [--pro-token <token>]
+#             [--remove-droplet-agent] [--keep-snapd]
+#
+#   --ssh-allow-from        Addresses or CIDRs, IPv4 or IPv6, allowed to ssh
+#                           in. Required. Leave out your own and you are
+#                           locked out: only the provider's console gets in.
+#   --ssh-port              Port sshd listens on (default 22).
+#   --ssh-users             Users allowed to log in (default: the user running
+#                           this script).
+#   --reboot-time           When unattended-upgrades reboots after an upgrade
+#                           that needs it (default 04:00).
+#   --upgrade-origin        An extra Unattended-Upgrade::Origins-Pattern entry,
+#                           e.g. origin=Docker. Repeat for each.
+#   --pro-token             Attach Ubuntu Pro and enable Livepatch.
+#   --remove-droplet-agent  Remove DigitalOcean's droplet-agent (the web
+#                           console; the recovery console still works).
+#   --keep-snapd            Don't remove snapd.
+#
+# Run it last: it blocks everything that earlier scripts listen on except ssh,
+# including health.sh's status endpoint, so "machine status" can no longer
+# reach the machine afterwards. The arguments end up in the machine's user
+# data, which the provider's metadata service serves to anything on the
+# machine (this script blocks containers from reaching it).
+#
 if [[ -n "$MACHINE_SCRIPT_DEBUG" ]]; then
     set -x
 fi

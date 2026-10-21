@@ -15,7 +15,7 @@ Supports the execution of several other scripts together (useful because machine
 ### docker.sh
 Installs Docker and performs associated system configuration.
 ### harden.sh
-Locks down a host that should accept nothing but ssh from a known set of addresses. Run it last, after any other scripts. It:
+Locks down a host that should accept nothing but ssh from a known set of addresses. Run it last, after any other scripts: it blocks whatever they listen on, including `health.sh`'s status endpoint, so `machine status` can't reach the machine afterwards. It:
 * Installs an nftables `inet harden` table that drops all inbound traffic except ssh from `--ssh-allow-from`. The table stands alone, so docker's rules are left in place.
 * Blocks containers from reaching the cloud metadata service, which serves the machine's user-data (including these script arguments).
 * Restricts sshd to public keys, `--ssh-users` (default: the provisioning user) and `--ssh-port`, with no root login and no forwarding. It also switches Ubuntu 24.04 from socket-activated sshd to the plain service.
