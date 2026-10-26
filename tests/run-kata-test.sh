@@ -11,7 +11,8 @@
 #   * the k3s baseline still holds: a Ready node, cert-manager available, the
 #     stack-gateway Gateway programmed
 #   * kata-deploy installed Kata on the node, which the node's own
-#     katacontainers.io/kata-runtime label is the authority on, and the "kata"
+#     katacontainers.io/kata-runtime label is the authority on (along with the
+#     result its install dispatcher records there), and the "kata"
 #     and "kata-qemu-runtime-rs" RuntimeClasses exist
 #   * the isolation itself: two pods of the same image report their kernel
 #     version, and the one on the kata RuntimeClass reports a kernel that is not
@@ -74,7 +75,11 @@ fetch_kubeconfig
 dump_kata_state () {
   dump_cluster_state
   echo "----- kata state at failure -----"
-  kubectl logs daemonset/kata-deploy --namespace kube-system --tail=200 || true
+  kubectl get nodes -L kata-deploy-job-dispatcher/result,katacontainers.io/kata-runtime || true
+  kubectl get nodes \
+    -o jsonpath='{range .items[*]}{.metadata.name}: {.metadata.annotations.kata-deploy-job-dispatcher/error}{"\n"}{end}' || true
+  kubectl get jobs --namespace kube-system || true
+  kubectl get events --namespace default --field-selector involvedObject.kind=Node || true
   ssh_machine "ls -l /dev/kvm; ps -ef | grep -E 'qemu|kata' | grep -v grep" || true
   echo "---------------------------------"
 }
@@ -102,9 +107,11 @@ pass "the stack-gateway Gateway in kube-system is Programmed"
 
 banner "Checking that Kata Containers was installed on the node"
 
-kubectl rollout status daemonset/kata-deploy --namespace kube-system --timeout=600s > /dev/null \
-  || fail "the kata-deploy DaemonSet is not ready"
-pass "the kata-deploy DaemonSet is ready"
+# kata-deploy installs with a one-shot dispatcher Job rather than a DaemonSet,
+# so there is nothing left running to ask. Instead the dispatcher records each
+# node's outcome on the node itself, which is the place to look either way.
+assert_kubectl_output "get nodes -o jsonpath={.items[0].metadata.labels.kata-deploy-job-dispatcher/result}" \
+  "^succeeded\$" "kata-deploy recorded a successful install on the node"
 
 # kata-deploy labels the node katacontainers.io/kata-runtime=false while it is
 # working and promotes it to "true" only once the node can actually run kata

@@ -142,12 +142,12 @@
 #                               the cluster's external behaviour differs.
 #
 #                               Kata is installed with upstream's kata-deploy
-#                               helm chart, whose DaemonSet places the shim,
-#                               hypervisor, guest kernel and guest rootfs on the
-#                               node, reconfigures k3s's containerd and restarts
-#                               k3s. Only the default hypervisor for the
-#                               architecture is installed, not the full set that
-#                               the chart can install.
+#                               helm chart, whose per-node install Job places
+#                               the shim, hypervisor, guest kernel and guest
+#                               rootfs on the node, reconfigures k3s's
+#                               containerd and restarts k3s. Only the default
+#                               hypervisor for the architecture is installed,
+#                               not the full set that the chart can install.
 #
 #                               A VM needs hardware virtualization, which on a
 #                               cloud machine means the provider must allow
@@ -904,10 +904,19 @@ echo "Installing Kata Containers"
 
 # Upstream's kata-deploy helm chart is the supported way to install Kata into an
 # existing cluster, and it knows about k3s specifically: with k8sDistribution=k3s
-# its DaemonSet writes k3s's containerd configuration under
+# it writes k3s's containerd configuration under
 # /var/lib/rancher/k3s/agent/etc/containerd, restarts the k3s systemd unit and
 # waits for the node to come back Ready. Doing any of that by hand here would be
 # a copy of upstream's work that goes stale.
+#
+# deploymentMode=job (the chart's default since Kata 4.3.0, set explicitly here
+# because the waiting below depends on it) leaves nothing running on the node
+# afterwards. Instead of a long-lived privileged DaemonSet, a dispatcher Job runs
+# as a helm post-install hook, starts one install Job pinned to each node, waits
+# for it, waits for the node to come back Ready after the k3s restart, and only
+# then labels the node katacontainers.io/kata-runtime=true. Helm waits for the
+# dispatcher, so when "helm upgrade --install" returns successfully the whole
+# installation is finished, not just submitted.
 #
 install_helm_cli
 
@@ -939,35 +948,44 @@ echo "Installing Kata Containers $KATA_VERSION"
 # "upgrade --install" rather than "install" because retry runs this again after a
 # failure, and a second "install" of a release that partially succeeded fails on
 # the name already being in use rather than on whatever went wrong the first time.
+# Running it again is safe: it re-runs the dispatcher, whose install stages skip
+# what is already done.
+#
+# --timeout bounds the dispatcher hook, which is the whole installation: pulling
+# a large image, unpacking it onto the node, restarting k3s and waiting for the
+# node to be Ready again. Helm's default of 5m is upstream's estimate for an
+# ordinary machine; nested virtualization at a cloud provider is much slower.
+# The API server going away during the k3s restart does not fail helm's wait: it
+# logs the dropped watch and resumes it.
+function kata_install_failed {
+  echo "Kata install result recorded on the node:"
+  sudo kubectl get nodes -L kata-deploy-job-dispatcher/result || true
+  sudo kubectl get nodes \
+    -o jsonpath='{range .items[*]}{.metadata.name}: {.metadata.annotations.kata-deploy-job-dispatcher/error}{"\n"}{end}' || true
+  die "$1; for more detail run: sudo kubectl describe node"
+}
 retry sudo helm upgrade --install kata-deploy \
   oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
   --kubeconfig /etc/rancher/k3s/k3s.yaml \
   --version "$KATA_VERSION" \
   --namespace kube-system \
+  --timeout 15m \
+  --set deploymentMode=job \
   --set k8sDistribution=k3s \
   --set runtimeClasses.createDefault=true \
   --set shims.disableAll=true \
   --set shims.qemu-runtime-rs.enabled=true \
   --set 'snapshotter.setup={}' \
-  || die "failed to install the kata-deploy helm chart"
-
-# The DaemonSet has a large image to pull and a lot to unpack onto the node, and
-# it restarts k3s when it reconfigures containerd -- so the API server goes away
-# underneath these calls, which is what retry is here for. Each attempt is given
-# a short timeout rather than one long one: a wait that was interrupted by the
-# k3s restart simply resumes on the next attempt.
-echo "Waiting for kata-deploy to install Kata on this node..."
-if ! retry sudo kubectl rollout status daemonset/kata-deploy --namespace kube-system --timeout=300s; then
-  die "the kata-deploy DaemonSet did not become ready; check with: sudo kubectl logs daemonset/kata-deploy --namespace kube-system"
-fi
+  || kata_install_failed "failed to install Kata with the kata-deploy helm chart"
 
 # kata-deploy claims the node with katacontainers.io/kata-runtime=false before it
 # writes anything, and only promotes the label to "true" once the node really is
-# able to run kata workloads. So this, and not the DaemonSet being ready, is what
-# says the installation worked.
+# able to run kata workloads. The dispatcher has done that by the time helm
+# returns, so this should pass on the first try; it is checked anyway because
+# the label, not helm's exit status, is what says the installation worked.
 if ! retry sudo kubectl wait --for=jsonpath='{.metadata.labels.katacontainers\.io/kata-runtime}'=true \
-    node --all --timeout=300s; then
-  die "the node was not labelled katacontainers.io/kata-runtime=true, so Kata was not fully installed; check with: sudo kubectl logs daemonset/kata-deploy --namespace kube-system"
+    node --all --timeout=60s; then
+  kata_install_failed "the node was not labelled katacontainers.io/kata-runtime=true, so Kata was not fully installed"
 fi
 
 echo "Installed Kata Containers"
